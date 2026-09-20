@@ -1,0 +1,433 @@
+--- ../live_shym1_20260919/orig/shym1-ctl.py	2026-09-19 15:53:58.645859988 +0500
++++ shym1-ctl.py	2026-09-20 12:56:36.920054478 +0500
+@@ -606,7 +606,8 @@
+           # Воет ли сейчас сирена. Кабинету это нужно в общем состоянии, а не
+           # отдельным запросом: кнопка обязана показывать правду даже у того,
+           # кто её не нажимал — рулить роботом могут с двух мест.
+-          "siren": siren_state()}
++          "siren": siren_state(),
++          "vol": vol_state()}
+     # Берём из постоянной подписки, а не поднимаем свою. Прежняя версия ждала
+     # первое сообщение до 1.5 с на КАЖДЫЙ запрос — пульт из-за этого заметно
+     # подвисал на старте, а сторож не мог позволить себе спросить позу вовсе.
+@@ -972,6 +973,7 @@
+             # Запись короче одного кадра — старый способ, по пику.
+             gain = max(1.0, min(SPEAK_MAX_GAIN,
+                                 (SPEAK_PEAK * full) / peak0)) * SPEAK_BOOST
++        gain *= _vol["radio"]
+         if abs(gain - 1.0) > 0.02:
+             pcm = audioop.mul(pcm, sw, gain)
+     except Exception:
+@@ -1049,6 +1051,214 @@
+     return {"ok": True, "seconds": round(dur, 2), "took": took}
+ 
+ 
++# ── РАЦИЯ ПОТОКОМ ───────────────────────────────────────────────────────
++# /speak ждёт всю фразу целиком: оператор договорил, отпустил клавишу, и
++# только тогда запись уходит на робота. Задержка никогда не меньше длины
++# фразы — 19.09 с телефона через 4G это читалось как «рация медленно доходит»
++# (14 с речи прозвучали через ~17 с после начала).
++#
++# Здесь звук идёт кусками по ~0.25 с, пока оператор ещё говорит, и сразу
++# уходит в один долгоживущий aplay. Задержка = кусок + сеть + буфер aplay.
++#
++#   POST /speak/chunk?sid=<сеанс>&seq=<номер>[&last=1]
++#        тело = сырой PCM S16LE, 16 кГц, моно (без заголовка WAV)
++#
++# Куски приходят параллельными запросами и могут обогнать друг друга, поэтому
++# складываем их по номеру и играем строго по порядку. Пропавший кусок ждём
++# недолго (STREAM_HOLE) и перешагиваем: дыра в полслова лучше, чем рация,
++# вставшая колом до конца фразы.
++#
++# Громкость нельзя посчитать по всей фразе — её ещё нет. Поэтому та же цель
++# SPEAK_TARGET, но подстройка плавная, по речевым кадрам: тишину и шум между
++# словами не выкручиваем (иначе шипение в паузах).
++STREAM_RATE = 16000
++STREAM_HOLE = float(os.environ.get("CTL_STREAM_HOLE", "0.5"))    # ждать пропавший кусок, с
++STREAM_IDLE = float(os.environ.get("CTL_STREAM_IDLE", "3.0"))    # нет кусков -> конец сеанса, с
++STREAM_PREBUF = float(os.environ.get("CTL_STREAM_PREBUF", "0.25"))  # запас перед первым звуком, с
++
++_stream = None
++_stream_lock = threading.Lock()
++
++
++class _SpeakStream(object):
++    def __init__(self, sid):
++        self.sid = sid
++        self.parts = {}          # seq -> bytes
++        self.last_seq = None     # номер последнего куска, когда он известен
++        self.next = 0
++        self.cv = threading.Condition()
++        self.t_last = time.time()
++        self.t0 = time.time()
++        self.played = 0          # байт отдано в aplay
++        self.gain = None
++        self.holes = 0
++        self.dead = False
++        self.proc = None
++        self.dev = None
++        self.err = None
++        threading.Thread(target=self._run, daemon=True).start()
++
++    def put(self, seq, data, last):
++        with self.cv:
++            if seq >= self.next and seq not in self.parts:
++                self.parts[seq] = data
++            if last:
++                self.last_seq = seq
++            self.t_last = time.time()
++            self.cv.notify()
++
++    def _open(self, dev):
++        return subprocess.Popen(
++            ["aplay", "-q", "-D", dev, "-t", "raw", "-f", "S16_LE",
++             "-r", str(STREAM_RATE), "-c", "1", "-B", "200000"],
++            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++
++    def _level(self, pcm):
++        import audioop
++        full = 32767.0
++        step = int(STREAM_RATE * 0.02) * 2
++        rmss, pks = [], []
++        for i in range(0, len(pcm) - step + 1, step):
++            fr = pcm[i:i + step]
++            rmss.append(audioop.rms(fr, 2))
++            pks.append(audioop.max(fr, 2))
++        if rmss:
++            rmss.sort()
++            pks.sort()
++            r = rmss[min(int(len(rmss) * 0.90), len(rmss) - 1)]
++            pk = pks[min(int(len(pks) * 0.95), len(pks) - 1)]
++            # Речь, а не пауза: ниже ~1% шкалы усиление не пересчитываем.
++            if r > 300 and pk > 0:
++                want = SPEAK_TARGET * full / r
++                want = min(want, SPEAK_PEAK * full / pk, SPEAK_MAX_GAIN)
++                want = max(want, 0.2) * SPEAK_BOOST
++                # Первый речевой кусок задаёт уровень сразу, дальше — плавно.
++                self.gain = want if self.gain is None else (0.7 * self.gain + 0.3 * want)
++        g = (self.gain if self.gain is not None else 1.0) * _vol["radio"]
++        if abs(g - 1.0) > 0.02:
++            pcm = audioop.mul(pcm, 2, g)
++        return pcm
++
++    def _write(self, pcm):
++        if not pcm:
++            return
++        pcm = self._level(pcm)
++        # Глушим слух на то, что уже отдано и ещё не отзвучало, плюс хвост.
++        ahead = self.played / 2.0 / STREAM_RATE - (time.time() - self.t_play)
++        voice_mute(max(0.0, ahead) + len(pcm) / 2.0 / STREAM_RATE + MUTE_TAIL, "speak")
++        try:
++            self.proc.stdin.write(pcm)
++            self.proc.stdin.flush()
++        except Exception:
++            # pulse отвалился посреди фразы — один раз уходим прямо в ALSA.
++            err = "aplay вышел с кодом %s" % self.proc.poll()
++            alt = spk_alsa_direct()
++            if alt and alt != self.dev:
++                log("рация потоком: %s не принял (%s), играю в %s" % (self.dev, err[:60], alt))
++                jlog("speak_fallback", device=alt, why=err[:80], stream=True)
++                self.dev = alt
++                self.proc = self._open(alt)
++                self.proc.stdin.write(pcm)
++                self.proc.stdin.flush()
++            else:
++                raise
++        self.played += len(pcm)
++
++    def _run(self):
++        ok = True
++        try:
++            nope = no_speaker()
++            if nope:
++                self.err = nope
++                return
++            ensure_loud()
++            voice_mute(STREAM_IDLE + MUTE_TAIL, "speak")
++            # Небольшой запас перед первым звуком: без него первый же сетевой
++            # рывок даёт щелчок-недобор в самом начале фразы.
++            with self.cv:
++                end = time.time() + 1.0
++                while (sum(len(v) for v in self.parts.values()) < STREAM_PREBUF * STREAM_RATE * 2
++                       and self.last_seq is None and time.time() < end):
++                    self.cv.wait(0.05)
++            self.dev = spk_device()
++            self.proc = self._open(self.dev)
++            self.t_play = time.time()
++            hole_t = None
++            while True:
++                with self.cv:
++                    while True:
++                        if self.next in self.parts:
++                            data = self.parts.pop(self.next)
++                            self.next += 1
++                            hole_t = None
++                            break
++                        if self.last_seq is not None and self.next > self.last_seq:
++                            data = None
++                            break
++                        now = time.time()
++                        if now - self.t_last > STREAM_IDLE or self.dead:
++                            data = None
++                            break
++                        if self.parts and min(self.parts) > self.next:
++                            # Кусок потерялся или застрял в сети.
++                            hole_t = hole_t or now
++                            if now - hole_t > STREAM_HOLE:
++                                self.holes += 1
++                                self.next = min(self.parts)
++                                continue
++                        self.cv.wait(0.05)
++                if data is None:
++                    break
++                self._write(data)
++                if self.played > MAX_SPEAK * STREAM_RATE * 2:
++                    self.err = "слишком длинно, обрезано на %.0f с" % MAX_SPEAK
++                    break
++        except Exception as e:
++            ok, self.err = False, str(e)[:150]
++        finally:
++            if self.proc is not None:
++                try:
++                    self.proc.stdin.close()
++                except Exception:
++                    pass
++                try:
++                    self.proc.wait(timeout=MAX_SPEAK + 5)
++                except Exception:
++                    self.proc.kill()
++            # Отзвучало — слух возвращаем с обычным хвостом на эхо. Сначала
++            # снимаем (иначе остался бы срок от /ptt/on на все 30 с), потом
++            # ставим короткий хвост.
++            voice_mute(0, "speak_stream")
++            voice_mute(MUTE_TAIL, "speak_stream")
++            sec = self.played / 2.0 / STREAM_RATE
++            jlog("speak", stream=True, sec=round(sec, 2), took=round(time.time() - self.t0, 2),
++                 ok=ok and not self.err, err=self.err, device=self.dev, holes=self.holes,
++                 gain=round(self.gain or 1.0, 2), chunks=self.next)
++            global _stream
++            with _stream_lock:
++                if _stream is self:
++                    _stream = None
++
++
++def handle_speak_chunk(sid, seq, last, data):
++    global _stream
++    if not sid:
++        return {"ok": False, "error": "нет sid"}
++    with _stream_lock:
++        st = _stream
++        if st is None or st.sid != sid:
++            if st is not None:
++                # Новый сеанс вытесняет старый: рация одна.
++                st.dead = True
++                with st.cv:
++                    st.cv.notify()
++            st = _stream = _SpeakStream(sid)
++    if st.err:
++        return {"ok": False, "error": st.err}
++    st.put(seq, data, last)
++    return {"ok": True, "seq": seq}
++
++
+ def handle_say(wav_bytes):
+     """WAV с ноутбука -> распознать -> ответить -> сказать вслух."""
+     import contextlib
+@@ -1323,6 +1533,95 @@
+     return wav
+ 
+ 
++# ── ГРОМКОСТЬ СИРЕНЫ И РАЦИИ ────────────────────────────────────────────
++# Колонка аппаратно уже на максимуме (PCM 100%, 0 дБ), и обе играют прямо в
++# ALSA, мимо pulse — значит громкость можно крутить только программно, умножая
++# сам звук. 1.0 = как было до 19.09. Выше 1.0 — громче, но упирается в шкалу:
++# пики режутся, звук грубеет. Для сирены это приемлемо (её задача — быть
++# слышной), для рации оператор решает сам, ползунком.
++#
++# Хранится в файле, а не в памяти: служба перезапускается, а оператор, раз
++# выставив «сирену потише», не должен вспоминать об этом после каждого старта.
++VOL_FILE = os.environ.get("CTL_VOL_FILE", os.path.join(APP, "config", "volume.json"))
++VOL_MAX = float(os.environ.get("CTL_VOL_MAX", "2.0"))
++_vol = {"siren": 1.0, "radio": 1.0}
++try:
++    with open(VOL_FILE) as _f:
++        for _k, _v in json.load(_f).items():
++            if _k in _vol:
++                _vol[_k] = max(0.0, min(float(_v), VOL_MAX))
++except Exception:
++    pass
++
++
++def vol_state():
++    return {"siren": int(round(_vol["siren"] * 100)), "radio": int(round(_vol["radio"] * 100)),
++            "max": int(round(VOL_MAX * 100))}
++
++
++def vol_set(siren=None, radio=None):
++    changed = []
++    for k, v in (("siren", siren), ("radio", radio)):
++        if v is None or v == "":
++            continue
++        v = max(0.0, min(float(v) / 100.0, VOL_MAX))
++        if abs(v - _vol[k]) > 1e-6:
++            _vol[k] = v
++            changed.append(k)
++    if changed:
++        try:
++            tmp = VOL_FILE + ".part"
++            with open(tmp, "w") as f:
++                json.dump(_vol, f)
++            os.replace(tmp, VOL_FILE)
++        except Exception as e:
++            log("громкость не сохранилась:", e)
++        jlog("vol", **vol_state())
++        log("громкость:", vol_state())
++        # Сирена уже воет — пусть новая громкость слышна сразу, а не со
++        # следующего круга (круг у длинной записи — 27 с).
++        if "siren" in changed:
++            with _siren_lock:
++                if _siren["on"] and _siren.get("proc") is not None:
++                    _siren["restart"] = True
++    st = vol_state()
++    st["ok"] = True
++    return st
++
++
++def _siren_scaled(path):
++    """Файл сирены с текущей громкостью. 100% — сам исходник; иначе копия в
++    /run (память, пропадает при перезагрузке), по одной на громкость."""
++    v = _vol["siren"]
++    if abs(v - 1.0) < 0.005:
++        return path
++    import audioop
++    import contextlib
++    import wave
++    d = os.path.dirname(PULT_FLAG) or "/tmp"
++    base = os.path.splitext(os.path.basename(path))[0]
++    out = os.path.join(d, "siren-%s-v%03d.wav" % (base, int(round(v * 100))))
++    if os.path.exists(out):
++        return out
++    with contextlib.closing(wave.open(path)) as w:
++        prm = w.getparams()
++        pcm = w.readframes(w.getnframes())
++    pcm = audioop.mul(pcm, prm.sampwidth, v)
++    # Старые копии этой же сирены с другой громкостью — прочь, чтобы /run не пух.
++    try:
++        for n in os.listdir(d):
++            if n.startswith("siren-%s-v" % base) and n.endswith(".wav"):
++                os.unlink(os.path.join(d, n))
++    except Exception:
++        pass
++    tmp = out + ".part"
++    with contextlib.closing(wave.open(tmp, "wb")) as w2:
++        w2.setparams(prm)
++        w2.writeframes(pcm)
++    os.replace(tmp, out)
++    return out
++
++
+ def _siren_worker(path, name):
+     """Крутит файл по кругу, пока не остановят или не выйдет срок.
+ 
+@@ -1349,7 +1648,12 @@
+             if not _siren["on"] or time.time() >= _siren["until"]:
+                 break
+         try:
+-            proc = sp.Popen(["aplay", "-q", "-D", dev, path],
++            play = _siren_scaled(path)
++        except Exception as e:
++            log("сирена: громкость не применилась (%s), играю как есть" % e)
++            play = path
++        try:
++            proc = sp.Popen(["aplay", "-q", "-D", dev, play],
+                             stdout=sp.DEVNULL, stderr=sp.PIPE)
+         except Exception as e:
+             jlog("siren_fail", name=name, err=str(e)[:120])
+@@ -1361,11 +1665,24 @@
+         # Иначе робот слушает собственный вой и отвечает на него.
+         started = time.time()
+         hung = False
++        again = False
+         while proc.poll() is None:
+             voice_mute(8.0, "siren")
+-            time.sleep(1.0)
++            # Сон дробный: смена громкости должна слышаться сразу.
++            for _ in range(5):
++                time.sleep(0.2)
++                with _siren_lock:
++                    if _siren.get("restart") or not _siren["on"]:
++                        break
+             with _siren_lock:
+                 stop = (not _siren["on"]) or time.time() >= _siren["until"]
++                again = bool(_siren.pop("restart", False)) and not stop
++            if again:
++                try:
++                    proc.terminate()
++                except Exception:
++                    pass
++                break
+             if stop:
+                 stopped_by_us = True
+                 try:
+@@ -1392,6 +1709,8 @@
+         # остановки.
+         if stopped_by_us:
+             break
++        if again:
++            continue                  # тот же круг заново, с новой громкостью
+ 
+         # ── Играл ли он на самом деле ────────────────────────────────────
+         # 16.09, shym1: сирена честно докладывала «играю», крутила aplay по
+@@ -1511,6 +1830,12 @@
+ 
+ class H(BaseHTTPRequestHandler):
+     protocol_version = "HTTP/1.1"
++    # TCP_NODELAY. Без него сервер шлёт заголовки и тело разными кусками, и
++    # второй кусок ждёт подтверждения первого: замер 20.09 с ноутбука через
++    # 4G — 145-186 мс на запрос при пинге 50 мс, с этой строкой 51-106 мс.
++    # Для пульта это полшага собаки на каждую команду.
++    disable_nagle_algorithm = True
++
+ 
+     def _cors(self):
+         """Разрешение для страницы дашборда. Отдаём ТОЛЬКО своим адресам."""
+@@ -1579,6 +1904,18 @@
+                 return self._send({"ok": False, "error": str(e)[:200]}, 400)
+         if p == "/siren/stop":
+             return self._send(siren_stop())
++        # ── громкость сирены и рации, в процентах ─────────────────────────
++        if p == "/vol":
++            st = vol_state()
++            st["ok"] = True
++            return self._send(st)
++        if p == "/vol/set":
++            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
++            try:
++                return self._send(vol_set((q.get("siren") or [None])[0],
++                                          (q.get("radio") or [None])[0]))
++            except ValueError:
++                return self._send({"ok": False, "error": "громкость — число в процентах"}, 400)
+         if p.startswith("/cmd/"):
+             ok, r = do_cmd(p[5:])
+             return self._send({"ok": ok, "result": r}, 200 if ok else 400)
+@@ -1707,6 +2044,20 @@
+             ok, r = do_move(d.get("vx", 0), d.get("vy", 0), d.get("vyaw", 0),
+                             arm=bool(d.get("arm")))
+             return self._send({"ok": ok, "result": r}, 200 if ok else 400)
++        if p == "/speak/chunk":
++            # Рация потоком: кусок сырого PCM, пока оператор ещё говорит.
++            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
++            try:
++                seq = int((q.get("seq") or ["0"])[0])
++            except ValueError:
++                return self._send({"ok": False, "error": "плохой seq"}, 400)
++            try:
++                r = handle_speak_chunk((q.get("sid") or [""])[0][:40], seq,
++                                       (q.get("last") or ["0"])[0] == "1", body)
++            except Exception as e:
++                log("ошибка /speak/chunk:", e)
++                return self._send({"ok": False, "error": str(e)[:200]}, 500)
++            return self._send(r, 200 if r.get("ok") else 500)
+         if p == "/speak":
+             # Рация. Отдельно от /say намеренно: там распознавание и модель,
+             # здесь только динамик. /speak обязан работать даже когда речь

@@ -1,0 +1,19 @@
+[Unit]
+Description=Лёгкая копия камеры для телефона (%i) -> MediaMTX
+After=@NAME@-mediamtx.service
+Requires=@NAME@-mediamtx.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=unitree
+EnvironmentFile=-/etc/default/@NAME@-camera-tiny-%i
+# Ждём, пока исходный поток появится в раздатчике: после перезагрузки службы
+# стартуют разом, и без паузы конвейер упал бы на пустом пути.
+ExecStartPre=/bin/sleep 12
+ExecStart=/usr/local/bin/@NAME@-camera-tiny.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

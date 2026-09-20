@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0b0d10">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>{{NAME}} · пульт</title>
+<!--
+  Пульт с телефона: сверху две камеры, снизу вкладки.
+    Пульт     — джойстик, позы, разрешение хода, СТОП
+    Звук      — сирена и рация (голос оператора в колонку робота)
+
+  Адрес: https://<робот>:9996/m  (через посредника shym1-ptt, как кабинет).
+  Движение — тот же /ctl/move, что у кабинета, с теми же предохранителями
+  сервера: скорость режет ctl.py, сторож мёртвой руки 0.35 с. Страница шлёт
+  команду 10 раз в секунду, пока палец на джойстике; убрали палец, свернули
+  браузер, погас экран — поток прекращается и робот встаёт сам.
+-->
+<style>
+:root{
+  --bg:#0b0d10; --panel:#14181d; --card:#1a1f26; --line:#252b33; --text:#e8ecf1; --dim:#8a94a3;
+  --ok:#2fbf71; --warn:#e0a526; --bad:#e5484d; --acc:#3b82f6;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+  font:14px/1.3 system-ui,-apple-system,Roboto,sans-serif;overflow:hidden;
+  overscroll-behavior:none;user-select:none;-webkit-user-select:none}
+body{display:flex;flex-direction:column;height:100dvh;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+button{font:inherit;color:var(--text)}
+.g{color:var(--ok)} .y{color:var(--warn)} .rd{color:var(--bad)} .dm{color:var(--dim)}
+
+/* ── камеры ──
+   Большая + маленькая в углу (нажал — поменялись), две поровну или одна.
+   Окна не пересоздаём при обмене — меняем только классы, иначе каждое
+   нажатие рвало бы и заново поднимало WebRTC. */
+#cam{position:relative;flex:1 1 40%;min-height:120px;background:#000;touch-action:none}
+#cam .v{position:absolute;overflow:hidden;background:#000}
+#cam .v iframe{position:absolute;inset:0;width:100%;height:100%;border:0;pointer-events:none}
+#cam .v .tag{position:absolute;left:6px;bottom:6px;background:rgba(0,0,0,.6);border-radius:6px;
+  padding:2px 6px;font-size:11px;pointer-events:none}
+#cam .v .tag i{font-style:normal;margin-left:4px}
+#cam.m-pip .v.main,#cam.m-one .v.main{inset:0}
+#cam.m-pip .v.main .tag{bottom:auto;top:40px}
+#cam.m-pip .v.pip{right:8px;bottom:44px;width:38%;aspect-ratio:16/9;z-index:2;
+  border:2px solid rgba(255,255,255,.7);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.6)}
+#cam.m-pip .v.pip .tag i{display:none}
+#cam.m-one .v.pip{display:none}
+#cam.m-split .v{left:0;right:0;height:50%}
+#cam.m-split .v.main{top:0} #cam.m-split .v.pip{bottom:0;border-top:1px solid var(--line)}
+.chips{position:absolute;left:8px;right:8px;top:8px;display:flex;gap:6px;flex-wrap:wrap;pointer-events:none;z-index:3}
+.chip{background:rgba(0,0,0,.6);border-radius:999px;padding:4px 10px;font-size:12px;
+  display:flex;align-items:center;gap:6px;backdrop-filter:blur(4px)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
+.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
+#c_siren{display:none;background:rgba(229,72,77,.85)}
+.camtools{position:absolute;right:8px;bottom:8px;display:flex;gap:6px;z-index:3}
+.camtools button{background:rgba(0,0,0,.6);border:0;border-radius:8px;padding:6px 10px;font-size:12px}
+
+/* ── нижняя часть: вкладки ── */
+#right{display:flex;flex-direction:column;flex:0 0 auto}
+#panel{height:min(50vh,420px);background:var(--panel);border-top:1px solid var(--line);position:relative}
+.page{position:absolute;inset:0;display:none;flex-direction:column}
+.page.on{display:flex}
+.scroll{overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;padding:10px;flex:1}
+#tabs{display:flex;background:#0f1216;border-top:1px solid var(--line)}
+#tabs button{flex:1;background:none;border:0;padding:9px 2px 8px;font-size:11px;color:var(--dim);
+  display:flex;flex-direction:column;align-items:center;gap:2px}
+#tabs button b{font-size:18px;font-weight:400;line-height:1}
+#tabs button.sel{color:var(--text);box-shadow:inset 0 2px 0 var(--acc)}
+
+/* Пульт */
+#p_drive{touch-action:none}
+#cmds{display:flex;gap:6px;padding:8px;overflow-x:auto;touch-action:pan-x;flex:none}
+#cmds button{flex:1 0 auto;min-width:64px;background:#1c2229;border:1px solid var(--line);
+  border-radius:10px;padding:10px 8px;font-size:14px}
+#cmds button:active{background:#27303a}
+#pad{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;gap:12px;padding:4px 12px 8px}
+.side{display:flex;flex-direction:column;gap:8px;align-items:center;width:78px}
+.round{width:74px;height:74px;border-radius:50%;font-weight:600;font-size:13px}
+#arm{border:2px solid var(--line);background:#1c2229;color:var(--dim)}
+#arm.on{border-color:var(--ok);color:#fff;background:#12402a}
+#stop{border:0;background:var(--bad);color:#fff;font-weight:700;font-size:15px;box-shadow:0 0 0 4px rgba(229,72,77,.25)}
+.small{width:78px;border-radius:10px;border:1px solid var(--line);background:#1c2229;padding:7px 4px;font-size:12px}
+.small.on{border-color:var(--warn);color:var(--warn)}
+.lbl{font-size:11px;color:var(--dim);text-align:center}
+/* Ширина — от экрана минус две боковые колонки: иначе на узком телефоне
+   СТОП и ДВИЖ. уезжают за край. */
+#stick{position:relative;flex:none;width:min(calc(100vw - 206px),calc(50vh - 150px),300px);aspect-ratio:1;border-radius:50%;
+  background:radial-gradient(circle,#1a2027 0,#10141a 70%);border:2px solid var(--line);touch-action:none}
+#stick.dis{opacity:.45}
+#stick::before,#stick::after{content:"";position:absolute;background:var(--line)}
+#stick::before{left:50%;top:10%;bottom:10%;width:1px}
+#stick::after{top:50%;left:10%;right:10%;height:1px}
+#knob{position:absolute;left:50%;top:50%;width:34%;aspect-ratio:1;margin:-17% 0 0 -17%;border-radius:50%;
+  background:radial-gradient(circle at 35% 30%,#5b8ff9,#2456c6);box-shadow:0 4px 14px rgba(0,0,0,.5);
+  will-change:transform;z-index:1}
+#stick.dis #knob{background:radial-gradient(circle at 35% 30%,#6b7380,#3a414b)}
+#vec{position:absolute;bottom:6px;left:0;right:0;text-align:center;font:11px ui-monospace,monospace;color:var(--dim)}
+
+/* Общие блоки для остальных вкладок */
+.sec{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:10px}
+.sec h3{margin:0 0 8px;font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;
+  display:flex;justify-content:space-between;gap:8px}
+.r{display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-bottom:1px solid #20262e;font-size:13px}
+.r:last-child{border-bottom:0}
+.r span{color:var(--dim);flex:none;max-width:48%}
+.r b{font-weight:500;text-align:right;word-break:break-word}
+.btns{display:flex;flex-wrap:wrap;gap:8px}
+.btn{background:#1c2229;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;text-decoration:none;color:var(--text)}
+.btn:active{background:#27303a}
+.btn.red{background:#3a1718;border-color:#6a2b2b;color:#f2c4c4}
+.btn.wide{flex:1}
+
+/* Громкость */
+.vol{display:flex;align-items:center;gap:10px;margin-top:10px}
+.vol span{font-size:12px;color:var(--dim);flex:none}
+.vol b{font:600 14px ui-monospace,monospace;min-width:48px;text-align:right;flex:none}
+.vol b.hot{color:var(--warn)}
+.vol input{flex:1;height:32px;accent-color:var(--acc);touch-action:pan-x}
+.volhint{font-size:11px;color:var(--dim);margin-top:2px}
+
+/* Рация */
+#ptalk{width:100%;height:96px;border-radius:14px;border:2px solid var(--line);background:#1c2229;
+  font-size:16px;font-weight:600;touch-action:none;margin-top:8px}
+#ptalk.rec{border-color:var(--bad);background:#3a1718;color:#ffd7d7}
+#ptalk:disabled{opacity:.5}
+.meter{height:6px;border-radius:3px;background:#20262e;overflow:hidden;margin-top:8px}
+.meter i{display:block;height:100%;width:0;background:var(--ok)}
+select{width:100%;margin-top:8px;background:#11151a;color:var(--dim);border:1px solid var(--line);
+  border-radius:8px;padding:7px;font:inherit;font-size:13px}
+
+#toast{position:fixed;left:50%;top:30%;transform:translate(-50%,-50%);background:rgba(0,0,0,.85);
+  padding:10px 16px;border-radius:10px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:9;max-width:80vw;text-align:center}
+#toast.show{opacity:1}
+
+/* Лёжа на боку: камеры слева, вкладки справа. */
+@media (orientation:landscape) and (max-height:560px){
+  body{flex-direction:row}
+  #cam{flex:1 1 60%}
+  #right{width:42%;min-width:320px;height:100%;border-left:1px solid var(--line)}
+  #panel{flex:1;height:auto;border-top:0}
+  #cmds{flex-wrap:wrap}
+  #cmds button{min-width:56px;padding:7px 4px;font-size:13px}
+  #stick{width:min(calc(42vw - 196px),calc(100vh - 200px),260px);min-width:110px}
+}
+</style>
+</head>
+<body>
+
+<div id="cam">
+  <div class="v" data-cam="go2"><iframe allow="autoplay; fullscreen" title="штатная камера Go2"></iframe><span class="tag">Go2<i></i></span></div>
+  <div class="v" data-cam="usb"><iframe allow="autoplay; fullscreen" title="USB-камера HD"></iframe><span class="tag">USB HD<i></i></span></div>
+  <div class="chips">
+    <span class="chip"><span class="dot" id="d_link"></span><span id="t_link">связь…</span></span>
+    <span class="chip"><span class="dot" id="d_pose"></span><span id="t_pose">поза…</span></span>
+    <span class="chip"><span class="dot" id="d_ver"></span><span id="c_name">{{NAME}}</span></span>
+    <span class="chip" id="c_siren">🔊 сирена</span>
+  </div>
+  <div class="camtools">
+    <button id="swap">⇄</button>
+    <button id="qual">лёгкое</button>
+    <button id="camsw">▣ PiP</button>
+    <button id="full">⛶</button>
+  </div>
+</div>
+
+<div id="right">
+<div id="panel">
+
+  <!-- ── Пульт ── -->
+  <div class="page on" id="p_drive">
+    <div id="cmds">
+      <button data-cmd="up">Встать</button>
+      <button data-cmd="liedown">Лечь</button>
+      <button data-cmd="sit">Сесть</button>
+      <button data-cmd="risesit">Из сидя</button>
+      <button data-cmd="hello">Привет</button>
+      <button data-cmd="stretch">Потянуться</button>
+      <button data-cmd="damp" data-confirm="Расслабить приводы? Собака осядет на пол.">Damp</button>
+    </div>
+    <div id="pad">
+      <div class="side">
+        <button id="arm" class="round">ДВИЖ.<br>ВЫКЛ</button>
+        <button id="fast" class="small">скорость 65%</button>
+      </div>
+      <div id="stick" class="dis"><div id="knob"></div><div id="vec">0.00 · 0.00</div></div>
+      <div class="side">
+        <button id="stop" class="round">СТОП</button>
+        <button id="mode" class="small">↔ поворот</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Звук: сирена и рация ── -->
+  <div class="page" id="p_sound"><div class="scroll">
+    <div class="sec">
+      <h3><span>сирена</span><span id="sst" class="dm">выключена</span></h3>
+      <div class="btns" id="sbtns"><span class="dm">загружаю список…</span></div>
+      <div class="btns" style="margin-top:8px"><button class="btn red wide" id="soff">■ выключить сирену</button></div>
+      <div class="vol"><span>громкость</span><input type="range" id="v_siren" min="0" max="200" step="5" value="100"><b id="vl_siren">100%</b></div>
+    </div>
+    <div class="sec">
+      <h3><span>рация</span><span id="pst" class="dm">—</span></h3>
+      <div class="vol" style="margin:0 0 8px"><span>громкость</span><input type="range" id="v_radio" min="0" max="200" step="5" value="100"><b id="vl_radio">100%</b></div>
+      <button class="btn" id="micon" style="width:100%">🎤 включить микрофон</button>
+      <button id="ptalk" disabled>держите и говорите</button>
+      <div class="meter"><i id="plvl"></i></div>
+      <select id="pdev"></select>
+      <div class="lbl" style="text-align:left;margin-top:8px">Голос звучит из колонки робота. Пока вы говорите, ассистент не слушает.<br>Громкость выше 100% — громче, но с искажением: колонка уже на аппаратном максимуме.</div>
+    </div>
+  </div></div>
+
+</div>
+<nav id="tabs">
+  <button data-tab="p_drive" class="sel"><b>🕹</b>Пульт</button>
+  <button data-tab="p_sound"><b>🔊</b>Звук</button>
+</nav>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function(){
+'use strict';
+/* По https (:9996) всё идёт через посредника на том же адресе. Запасной вход
+   http://<робот>:9995/m посредника не имеет — туда ходим напрямую. */
+var SECURE = location.protocol === 'https:';
+var CTL = SECURE ? '/ctl' : ('http://' + location.hostname + ':9999');
+var MTX = SECURE ? '/mtx/' : ('http://' + location.hostname + ':8889/');
+/* Лёгкие копии лежат в отдельном раздатчике (свои порты): основной строит
+   кабинет на ноутбуке, и лишние пути там стали бы лишними окнами камер. */
+var MTX2 = SECURE ? '/mtx2/' : ('http://' + location.hostname + ':8890/');
+var SEND_MS = 100;          // сторож сервера 0.35 с: 10 пакетов/с дают запас на два потерянных
+var DEAD = 0.12;            // мёртвая зона в центре
+var LIM = {vx: 0.6, vy: 0.4, vyaw: 0.8};   // уточнится из /ctl/state
+
+var $ = function(id){ return document.getElementById(id); };
+var each = function(sel, fn){ Array.prototype.forEach.call(document.querySelectorAll(sel), fn); };
+var stick = $('stick'), knob = $('knob'), vecEl = $('vec'), armBtn = $('arm');
+
+function toast(t, ms){
+  var e = $('toast'); e.textContent = t; e.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(function(){ e.classList.remove('show'); }, ms || 1600);
+}
+function buzz(p){ try{ navigator.vibrate && navigator.vibrate(p); }catch(e){} }
+function load(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
+function save(k, v){ try{ localStorage.setItem(k, v); }catch(e){} }
+
+/* ── джойстик: состояние объявляем раньше всех, release() зовут отовсюду ── */
+var active = null, vx = 0, vy = 0, vyaw = 0, inflight = false, timer = null, armed = false;
+
+/* ── вкладки ── */
+var curTab = 'p_drive';
+function tab(id){
+  if (!$(id)) id = 'p_drive';
+  if (curTab === 'p_drive' && id !== 'p_drive') release();
+  curTab = id;
+  each('.page', function(p){ p.classList.toggle('on', p.id === id); });
+  each('#tabs button', function(b){ b.classList.toggle('sel', b.getAttribute('data-tab') === id); });
+  save('m_tab', id);
+  if (id === 'p_sound') sirenButtons();
+}
+each('#tabs button', function(b){ b.onclick = function(){ tab(b.getAttribute('data-tab')); }; });
+
+/* ── камеры ── */
+/* У каждой камеры два потока. Лёгкий (640x360, ~200-380 кбит/с) собака жмёт
+   железом специально для телефона; полный — тот же, что смотрят с ноутбука и
+   заказчик. По мобильному интернету лёгкий важнее чёткости: два полных потока
+   (3.4 Мбит/с) забивают отдачу 4G, и тогда ждёт ВСЁ — джойстик, рация, кнопки. */
+var CAMS = [{k: 'go2', light: 'cam_tiny',  full: 'cam_low'},
+            {k: 'usb', light: 'cam2_tiny', full: 'cam'}];
+var KEYS_CAM = CAMS.map(function(c){ return c.k; });
+var quality = load('m_q') === 'full' ? 'full' : 'light';
+function camPath(k){
+  for (var i = 0; i < CAMS.length; i++) if (CAMS[i].k === k) return CAMS[i][quality];
+  return CAMS[0][quality];
+}
+var MODES = {pip: '▣ PiP', split: '◫ две', one: '□ одна'};
+var ORDER = ['pip', 'split', 'one'];
+var main = load('m_main') || KEYS_CAM[0], mode = load('m_mode') || 'pip';
+if (KEYS_CAM.indexOf(main) < 0) main = KEYS_CAM[0];
+if (!MODES[mode]) mode = 'pip';
+var views = document.querySelectorAll('#cam .v');
+function camSrc(n){
+  var base = /_tiny$/.test(n) ? MTX2 : MTX;
+  return base + n + '/?controls=false&muted=true&autoplay=true&playsinline=true';
+}
+function layout(){
+  $('cam').className = 'm-' + mode;
+  $('camsw').textContent = MODES[mode];
+  Array.prototype.forEach.call(views, function(v){
+    var n = v.getAttribute('data-cam'), isMain = n === main;
+    v.classList.toggle('main', isMain);
+    v.classList.toggle('pip', !isMain);
+    // В режиме «одна» второй поток не тянем вовсе — бережём канал.
+    var want = (mode === 'one' && !isMain) ? 'about:blank' : camSrc(camPath(n));
+    var f = v.querySelector('iframe');
+    if (f.getAttribute('src') !== want) f.setAttribute('src', want);
+  });
+  $('qual').textContent = quality === 'full' ? 'чёткое' : 'лёгкое';
+  $('qual').style.color = quality === 'full' ? 'var(--warn)' : '';
+  save('m_main', main); save('m_mode', mode); save('m_q', quality);
+}
+function swap(){ main = KEYS_CAM[(KEYS_CAM.indexOf(main) + 1) % KEYS_CAM.length]; layout(); }
+Array.prototype.forEach.call(views, function(v){
+  v.addEventListener('click', function(){ if (mode === 'pip' && v.classList.contains('pip')) swap(); });
+});
+$('swap').onclick = swap;
+$('qual').onclick = function(){
+  quality = quality === 'full' ? 'light' : 'full';
+  layout();
+  toast(quality === 'full' ? 'Полное качество: канал загружен сильнее' : 'Лёгкое видео: канал свободнее');
+};
+$('camsw').onclick = function(){ mode = ORDER[(ORDER.indexOf(mode) + 1) % ORDER.length]; layout(); };
+$('full').onclick = function(){
+  var d = document, el = d.documentElement;
+  if (d.fullscreenElement) { d.exitFullscreen(); return; }
+  (el.requestFullscreen || el.webkitRequestFullscreen || function(){}).call(el);
+  try{ screen.orientation.lock('landscape').catch(function(){}); }catch(e){}
+};
+layout();
+/* Камеру вынули и воткнули — плеер MediaMTX сам к вернувшемуся потоку не
+   цепляется, окно остаётся чёрным. Ловим «не готов -> готов» и
+   переподключаем именно эту картинку. */
+var wasReady = {};
+function reloadCam(n){
+  var f = document.querySelector('#cam .v iframe[src*="/' + n + '/"]');
+  if (!f || f.getAttribute('src') === 'about:blank') return;
+  var s = f.getAttribute('src');
+  f.setAttribute('src', 'about:blank');
+  setTimeout(function(){ f.setAttribute('src', s); }, 150);
+}
+
+/* ── связь с пультом и поза (ctl.py, раз в секунду) ── */
+function api(path){
+  return fetch(CTL + path, {cache: 'no-store'}).then(function(r){
+    return r.json().then(function(j){ j._http = r.status; return j; });
+  });
+}
+function fire(path){ return api(path).catch(function(){ toast('нет связи с роботом'); }); }
+var lastPult = null;
+var pollSkip = 0;
+function poll(){
+  // Пока палец на джойстике, канал нужен командам. Опрос состояния тогда
+  // реже: каждый лишний запрос по 4G стоит тех же миллисекунд, что и шаг.
+  if (timer && ++pollSkip % 3) return;
+  var t0 = performance.now();
+  api('/state').then(function(s){
+    var ms = Math.round(performance.now() - t0);
+    $('d_link').className = 'dot ' + (ms < 150 ? 'ok' : ms < 400 ? 'warn' : 'bad');
+    $('t_link').textContent = ms + ' мс';
+    if (s.limits) { LIM.vx = s.limits.vx; LIM.vy = s.limits.vy; LIM.vyaw = s.limits.vyaw; }
+    if (s.name) $('c_name').textContent = s.name;
+    if (s.posture) {
+      $('t_pose').textContent = s.posture + ' · ' + (s.height != null ? s.height.toFixed(2) + ' м' : '');
+      $('d_pose').className = 'dot ' + (s.standing ? 'ok' : 'warn');
+    } else {
+      $('t_pose').textContent = s.state_error || 'нет данных';
+      $('d_pose').className = 'dot bad';
+    }
+    if (!s.sport) { $('t_pose').textContent = 'SDK недоступен'; $('d_pose').className = 'dot bad'; }
+    // Сервер снимает разрешение сам (сторож, /disarm с другого места).
+    // Пока палец не на джойстике — верим серверу.
+    if (armed && !s.armed && active === null) setArmed(false, true);
+    // Запустили или закрыли пульт на ноутбуке — рулить с двух мест нельзя.
+    if (lastPult !== null && s.pult !== lastPult && armed) {
+      setArmed(false);
+      toast(s.pult ? 'Ход снят: запущен пульт на ноутбуке' : 'Ход снят: сеанс пульта закончен', 2500);
+    }
+    lastPult = s.pult;
+    sirenState(s.siren);
+    if (s.vol) volShow(s.vol);
+  }).catch(function(){
+    $('d_link').className = 'dot bad'; $('t_link').textContent = 'нет связи';
+  });
+}
+
+/* ── разрешение хода ── */
+function setArmed(on, quiet){
+  armed = on;
+  armBtn.classList.toggle('on', on);
+  armBtn.innerHTML = on ? 'ДВИЖ.<br>ВКЛ' : 'ДВИЖ.<br>ВЫКЛ';
+  stick.classList.toggle('dis', !on);
+  if (!quiet) {
+    buzz(on ? [30, 40, 30] : 60);
+    api(on ? '/arm' : '/disarm').catch(function(){});
+  }
+  if (!on) release();
+}
+armBtn.onclick = function(){ setArmed(!armed); };
+
+$('stop').onclick = function(){
+  buzz(120);
+  release();
+  api('/stop').catch(function(){});
+  setArmed(false);
+  toast('СТОП');
+};
+
+var strafe = false;
+$('mode').onclick = function(){
+  strafe = !strafe;
+  $('mode').textContent = strafe ? '⇆ боком' : '↔ поворот';
+};
+/* Как Shift в кабинете: обычно 65% от предела сервера, по кнопке — полный. */
+var gain = 0.65;
+$('fast').onclick = function(){
+  gain = gain < 1 ? 1 : 0.65;
+  $('fast').textContent = 'скорость ' + Math.round(gain * 100) + '%';
+  $('fast').classList.toggle('on', gain === 1);
+};
+
+/* ── позы ── */
+each('#cmds button', function(b){
+  b.onclick = function(){
+    var c = b.getAttribute('data-confirm');
+    if (c && !confirm(c)) return;
+    buzz(20);
+    api('/cmd/' + b.getAttribute('data-cmd')).then(function(r){
+      toast(r.ok ? b.textContent : ('Ошибка: ' + (r.result || r.error)));
+    }).catch(function(){ toast('нет связи'); });
+  };
+});
+
+/* ── джойстик ── */
+function shape(v){                    // мёртвая зона + мягкий старт
+  var a = Math.abs(v);
+  if (a < DEAD) return 0;
+  a = (a - DEAD) / (1 - DEAD);
+  return Math.sign(v) * (0.35 * a + 0.65 * a * a);
+}
+function place(dx, dy){
+  var r = stick.clientWidth / 2;
+  knob.style.transform = 'translate(' + (dx * r * 0.66) + 'px,' + (dy * r * 0.66) + 'px)';
+}
+function update(e){
+  var b = stick.getBoundingClientRect();
+  var r = b.width / 2;
+  var dx = (e.clientX - b.left - r) / r, dy = (e.clientY - b.top - r) / r;
+  var m = Math.hypot(dx, dy);
+  if (m > 1) { dx /= m; dy /= m; }
+  place(dx, dy);
+  vx = shape(-dy) * LIM.vx * gain;
+  if (strafe) { vy = shape(-dx) * LIM.vy * gain; vyaw = 0; }
+  else { vyaw = shape(-dx) * LIM.vyaw * gain; vy = 0; }
+  vecEl.textContent = vx.toFixed(2) + ' · ' + (strafe ? vy : vyaw).toFixed(2);
+}
+function send(){
+  if (!armed || inflight) return;      // пакет висит — не копим очередь, сторож подстрахует
+  inflight = true;
+  var q = '/move?vx=' + vx.toFixed(3) + '&vy=' + vy.toFixed(3) + '&vyaw=' + vyaw.toFixed(3) + '&arm=1';
+  var t = setTimeout(function(){ inflight = false; }, 400);
+  fetch(CTL + q, {cache: 'no-store'}).then(function(r){
+    if (!r.ok) return r.json().then(function(j){ toast(String(j.result || j.error || r.status)); });
+  }).catch(function(){}).then(function(){ clearTimeout(t); inflight = false; });
+}
+function release(){
+  var was = active !== null || timer;
+  active = null; vx = vy = vyaw = 0;
+  place(0, 0); vecEl.textContent = '0.00 · 0.00';
+  if (timer) { clearInterval(timer); timer = null; }
+  if (was && armed) {                 // явный ноль, дважды — на случай потери
+    var z = function(){ fetch(CTL + '/move?vx=0&vy=0&vyaw=0', {cache: 'no-store'}).catch(function(){}); };
+    z(); setTimeout(z, 120);
+  }
+}
+stick.addEventListener('pointerdown', function(e){
+  e.preventDefault();
+  if (!armed) { toast('Сначала «ДВИЖ.» — разрешить ход'); buzz(40); return; }
+  if (active !== null) return;
+  active = e.pointerId;
+  try{ stick.setPointerCapture(e.pointerId); }catch(_){}
+  update(e); send();
+  timer = setInterval(send, SEND_MS);
+});
+stick.addEventListener('pointermove', function(e){
+  if (e.pointerId === active) { e.preventDefault(); update(e); }
+});
+['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function(ev){
+  stick.addEventListener(ev, function(e){ if (e.pointerId === active) release(); });
+});
+
+/* ── сирена ──
+   Список звуков и состояние — с робота: включить могли из кабинета на
+   ноутбуке, и кнопка обязана показывать правду. */
+var sirenNames = null;
+function sirenState(v){
+  var e = $('sst'), chip = $('c_siren');
+  if (v && v.on) {
+    e.textContent = (v.name || 'играет').replace(/[.](wav|mp3)$/i, '') + ' · ' + Math.round(v.left) + ' с';
+    e.className = 'rd'; chip.style.display = 'flex';
+  } else {
+    e.textContent = (v && v.error) ? v.error : 'выключена';
+    e.className = (v && v.error) ? 'rd' : 'dm'; chip.style.display = 'none';
+  }
+}
+function sirenButtons(){
+  api('/siren').then(function(d){
+    if (!d.files || d.files.join() === sirenNames) return;
+    sirenNames = d.files.join();
+    var box = $('sbtns'); box.innerHTML = '';
+    d.files.forEach(function(n){
+      var b = document.createElement('button');
+      b.className = 'btn';
+      b.textContent = '▶ ' + n.replace(/[.](wav|mp3)$/i, '').replace(/^siren[-_]/i, '').replace(/[_-]+/g, ' ');
+      b.title = n;
+      b.onclick = function(){
+        buzz(30);
+        api('/siren/start?name=' + encodeURIComponent(n)).then(function(x){
+          if (!x.ok) toast('сирена: ' + (x.error || 'не вышло'), 2500);
+        }).catch(function(){ toast('нет связи с роботом'); });
+      };
+      box.appendChild(b);
+    });
+    if (!d.files.length) box.innerHTML = '<span class="dm">на роботе нет файлов сирены</span>';
+  }).catch(function(){ $('sbtns').innerHTML = '<span class="rd">нет связи с роботом</span>'; });
+}
+$('soff').onclick = function(){ buzz(60); fire('/siren/stop'); };
+
+/* ── громкость сирены и рации ──
+   Хранится на собаке (переживает перезапуск и видна с любого пульта), поэтому
+   ползунок показывает то, что прислала собака, — кроме момента, когда его
+   двигает палец. Шлём с задержкой: ползунок даёт десятки событий в секунду,
+   а собаке нужно последнее. Сирена, которая уже воет, меняет громкость сразу. */
+var volBusy = {siren: 0, radio: 0}, volTimer = {};
+function volLabel(k, v){
+  var b = $('vl_' + k); b.textContent = v + '%'; b.classList.toggle('hot', v > 100);
+}
+function volShow(vol){
+  ['siren', 'radio'].forEach(function(k){
+    if (vol[k] == null || Date.now() - volBusy[k] < 1500) return;
+    var r = $('v_' + k);
+    if (vol.max) r.max = vol.max;
+    r.value = vol[k]; volLabel(k, vol[k]);
+  });
+}
+['siren', 'radio'].forEach(function(k){
+  var r = $('v_' + k);
+  r.addEventListener('input', function(){
+    volBusy[k] = Date.now(); volLabel(k, +r.value);
+    clearTimeout(volTimer[k]);
+    volTimer[k] = setTimeout(function(){
+      api('/vol/set?' + k + '=' + r.value).then(function(v){
+        volBusy[k] = Date.now();
+        if (!v.ok) toast('громкость: ' + (v.error || 'не вышло'));
+      }).catch(function(){ toast('нет связи с роботом'); });
+    }, 200);
+  });
+});
+
+/* ── рация ──
+   Держите кнопку и говорите: запись уходит WAV'ом 16 кГц на /speak, робот
+   играет её своей колонкой. На время рации слух ассистента глушится
+   (/ptt/on), иначе он полезет отвечать на голос из собственной колонки.
+   Микрофон браузер даёт только защищённой странице — отсюда https. */
+function pst(t, cls){ var e = $('pst'); e.textContent = t; e.className = cls || 'dm'; }
+var ptalk = $('ptalk');
+if (!SECURE || !navigator.mediaDevices) {
+  $('micon').textContent = '🔒 рация только по https — перейти';
+  $('micon').onclick = function(){ location.href = 'https://' + location.hostname + ':9996/m'; };
+  pst('нужен https');
+} else {
+  var actx = null, astream = null, asrc = null, aproc = null, anode = null;
+  var achunks = [], arec = false, abusy = false, at0 = 0, ARATE = 16000, AMAX = 60;
+  /* ПОТОКОМ: пока кнопка зажата, каждые ~0.25 с уходит кусок на
+     /speak/chunk, и собака играет его сразу, не дожидаясь конца фразы.
+     Раньше вся фраза уходила только после отпускания — задержка была не
+     меньше длины самой фразы. Старый путь (/speak целым WAV) остался
+     запасным: если на собаке служба без потока, переключаемся на него сами. */
+  var STREAM = true, CHUNK = 4000;          // 4000 отсчётов при 16 кГц = 0.25 с
+  var sid = '', seq = 0, pend = [], sentSec = 0, streamFail = false;
+
+  var devList = function(){
+    navigator.mediaDevices.enumerateDevices().then(function(ds){
+      var sel = $('pdev'), cur = sel.value, k = 0;
+      sel.innerHTML = '';
+      ds.forEach(function(d){
+        if (d.kind !== 'audioinput') return;
+        var o = document.createElement('option');
+        o.value = d.deviceId; o.textContent = d.label || ('микрофон ' + (++k));
+        sel.appendChild(o);
+      });
+      if (cur) sel.value = cur;
+    }).catch(function(){});
+  };
+  var meter = function(){
+    var buf = new Uint8Array(anode.fftSize), bar = $('plvl');
+    (function tick(){
+      anode.getByteTimeDomainData(buf);
+      var peak = 0;
+      for (var i = 0; i < buf.length; i++) { var v = Math.abs(buf[i] - 128) / 128; if (v > peak) peak = v; }
+      bar.style.width = Math.min(100, Math.round(peak * 140)) + '%';
+      bar.style.background = peak > 0.85 ? 'var(--warn)' : 'var(--ok)';
+      requestAnimationFrame(tick);
+    })();
+  };
+  var micOpen = function(){
+    var id = $('pdev').value;
+    var want = {channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true};
+    if (id) want.deviceId = {exact: id};
+    pst('спрашиваю микрофон…');
+    // Контекст создаём прямо в нажатии: без жеста пользователя телефоны
+    // держат его «спящим», и запись шла бы тишиной.
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+    navigator.mediaDevices.getUserMedia({audio: want}).then(function(s){
+      if (astream) astream.getTracks().forEach(function(t){ t.stop(); });
+      astream = s;
+      if (asrc) { try{ asrc.disconnect(); }catch(e){} }
+      asrc = actx.createMediaStreamSource(s);
+      if (!anode) { anode = actx.createAnalyser(); anode.fftSize = 512; meter(); }
+      asrc.connect(anode);
+      if (!aproc) {
+        aproc = actx.createScriptProcessor(4096, 1, 1);
+        aproc.onaudioprocess = function(e){
+          if (!arec) return;
+          var buf = new Float32Array(e.inputBuffer.getChannelData(0));
+          achunks.push(buf);
+          if (STREAM) { pend.push(buf); drain(false); }
+          if ((actx.currentTime - at0) > AMAX) pttStop();
+        };
+        var g = actx.createGain(); g.gain.value = 0;   // себя в динамике телефона не слышим
+        aproc.connect(g); g.connect(actx.destination);
+      }
+      asrc.connect(aproc);
+      ptalk.disabled = false;
+      $('micon').style.display = 'none';
+      pst('готово', 'g');
+      devList();
+    }).catch(function(e){ pst('микрофон не дали: ' + (e && e.name ? e.name : e), 'rd'); });
+  };
+  /* Пересчёт в 16 кГц усреднением окна (не каждый n-й отсчёт — иначе
+     металлический призвук). Остаток, не набравший целого окна, возвращаем. */
+  var resample = function(all, srcRate){
+    var ratio = srcRate / ARATE, outLen = Math.floor(all.length / ratio), pcm = new Int16Array(outLen);
+    for (var i = 0; i < outLen; i++) {
+      var from = Math.floor(i * ratio), to = Math.min(all.length, Math.floor((i + 1) * ratio)), sum = 0, cnt = 0;
+      for (var j = from; j < to; j++) { sum += all[j]; cnt++; }
+      var v = cnt ? sum / cnt : 0;
+      v = Math.max(-1, Math.min(1, v));
+      pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+    }
+    return {pcm: pcm, rest: all.subarray(Math.floor(outLen * ratio))};
+  };
+  var sendChunk = function(pcm, last){
+    var n = seq++;
+    sentSec += pcm.length / ARATE;
+    fetch(CTL + '/speak/chunk?sid=' + sid + '&seq=' + n + (last ? '&last=1' : ''),
+          {method: 'POST', body: pcm.buffer, headers: {'Content-Type': 'application/octet-stream'}})
+      .then(function(r){
+        if (r.status === 404) { STREAM = false; streamFail = true; }   // старая служба на собаке
+        else if (!r.ok) r.json().then(function(j){ pst(j.error || 'рация: сбой', 'rd'); }).catch(function(){});
+      }).catch(function(){ pst('кусок не дошёл — связь', 'y'); });
+  };
+  var drain = function(last){
+    var total = 0, i;
+    for (i = 0; i < pend.length; i++) total += pend[i].length;
+    if (!last && total < CHUNK * actx.sampleRate / ARATE) return;
+    var all = new Float32Array(total), off = 0;
+    for (i = 0; i < pend.length; i++) { all.set(pend[i], off); off += pend[i].length; }
+    var r = resample(all, actx.sampleRate);
+    pend = r.rest.length ? [new Float32Array(r.rest)] : [];
+    sendChunk(r.pcm, last);
+  };
+  var toWav = function(parts, srcRate){
+    var total = 0, i, j;
+    for (i = 0; i < parts.length; i++) total += parts[i].length;
+    var all = new Float32Array(total), off = 0;
+    for (i = 0; i < parts.length; i++) { all.set(parts[i], off); off += parts[i].length; }
+    var ratio = srcRate / ARATE, outLen = Math.floor(all.length / ratio), pcm = new Int16Array(outLen);
+    for (i = 0; i < outLen; i++) {
+      // Усредняем окно, а не берём каждый n-й отсчёт — иначе металлический призвук.
+      var from = Math.floor(i * ratio), to = Math.min(all.length, Math.floor((i + 1) * ratio)), sum = 0, cnt = 0;
+      for (j = from; j < to; j++) { sum += all[j]; cnt++; }
+      var v = cnt ? sum / cnt : 0;
+      v = Math.max(-1, Math.min(1, v));
+      pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+    }
+    var buf = new ArrayBuffer(44 + pcm.length * 2), dv = new DataView(buf);
+    var str = function(o, s){ for (var k = 0; k < s.length; k++) dv.setUint8(o + k, s.charCodeAt(k)); };
+    str(0, 'RIFF'); dv.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVE');
+    str(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+    dv.setUint16(22, 1, true); dv.setUint32(24, ARATE, true);
+    dv.setUint32(28, ARATE * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    str(36, 'data'); dv.setUint32(40, pcm.length * 2, true);
+    for (i = 0; i < pcm.length; i++) dv.setInt16(44 + i * 2, pcm[i], true);
+    return new Blob([buf], {type: 'audio/wav'});
+  };
+  var pttStart = function(){
+    if (arec || abusy || !astream) return;
+    if (actx.state === 'suspended') actx.resume();
+    achunks = []; arec = true; at0 = actx.currentTime;
+    sid = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    seq = 0; pend = []; sentSec = 0; streamFail = false;
+    ptalk.classList.add('rec');
+    ptalk.textContent = STREAM ? 'в эфире — собака повторяет сразу' : 'говорите — отпустите, и прозвучит';
+    pst(STREAM ? 'в эфире…' : 'пишу…', 'rd'); buzz(30);
+    fetch(CTL + '/ptt/on').catch(function(){});
+  };
+  var pttStop = function(){
+    if (!arec) return;
+    arec = false;
+    ptalk.classList.remove('rec'); ptalk.textContent = 'держите и говорите';
+    var got = 0;
+    for (var i = 0; i < achunks.length; i++) got += achunks[i].length;
+    var sec = got / actx.sampleRate;
+    if (sec < 0.25) {
+      pst('слишком коротко — держите, пока говорите');
+      if (STREAM && seq) drain(true);
+      fetch(CTL + '/ptt/off').catch(function(){});
+      return;
+    }
+    if (STREAM && !streamFail) {
+      // Хвост и отметка «конец». Слух ассистента собака вернёт сама, когда
+      // доиграет, — /ptt/off отсюда снял бы глушение посреди фразы.
+      drain(true);
+      achunks = [];
+      pst('в эфир ушло ' + sentSec.toFixed(1) + ' с', 'g');
+      return;
+    }
+    var wav = toWav(achunks, actx.sampleRate);
+    achunks = []; abusy = true; ptalk.disabled = true;
+    pst('отправляю ' + sec.toFixed(1) + ' с…');
+    fetch(CTL + '/speak', {method: 'POST', body: wav, headers: {'Content-Type': 'audio/wav'}})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d && d.ok) pst('прозвучало: ' + d.seconds + ' с', 'g');
+        else pst((d && d.error) || 'робот не смог проиграть', 'rd');
+      })
+      .catch(function(){ pst('не дошло до робота', 'rd'); })
+      .then(function(){ abusy = false; ptalk.disabled = false; fetch(CTL + '/ptt/off').catch(function(){}); });
+  };
+  $('micon').onclick = micOpen;
+  $('pdev').onchange = micOpen;
+  ptalk.addEventListener('pointerdown', function(e){ e.preventDefault(); pttStart(); });
+  // Отпускание ловим везде: палец часто съезжает с кнопки, не отрываясь.
+  ['pointerup', 'pointercancel', 'blur'].forEach(function(ev){ window.addEventListener(ev, pttStop); });
+  document.addEventListener('visibilitychange', function(){ if (document.hidden) pttStop(); });
+  ptalk.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+}
+
+/* ── потоки камер (/api дашборда, раз в 2 с): подпись на картинке и
+   переподключение вернувшейся камеры ── */
+var DOTC = {ok: 'ok', warn: 'warn', degraded: 'warn', bad: 'bad'};
+function videoPanel(s){
+  var v = s.video || {}, names = Object.keys(v.paths || {}).sort();
+  names.forEach(function(n){
+    var p = v.paths[n];
+    if (wasReady[n] === false && p.ready) reloadCam(n);
+    wasReady[n] = p.ready;
+    // Окно подписываем только тем потоком, который в нём сейчас показан:
+    // путей четыре (два лёгких, два полных), окон два.
+    var key = null;
+    for (var ci = 0; ci < CAMS.length; ci++) if (CAMS[ci][quality] === n) key = CAMS[ci].k;
+    if (!key) return;
+    // Чёрное окно должно объяснять себя само, а не выглядеть поломкой.
+    var tag = document.querySelector('#cam .v[data-cam="' + key + '"] .tag i');
+    if (tag) {
+      tag.textContent = p.ready ? (p.kbps_in != null ? '· ' + Math.round(p.kbps_in) + ' кбит/с' : '') : '· НЕТ ПОТОКА';
+      tag.className = p.ready ? '' : 'rd';
+    }
+  });
+}
+function tick(){
+  if (timer) return;          // едем: сводка подождёт, канал занят командами
+  fetch('/api', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(s){
+    $('d_ver').className = 'dot ' + (DOTC[(s.verdict || {}).status] || '');
+    videoPanel(s);
+  }).catch(function(){ $('d_ver').className = 'dot bad'; });
+}
+
+/* ── безопасность и экран ── */
+// Ушли со страницы — ход прекращается и разрешение снимается.
+document.addEventListener('visibilitychange', function(){ if (document.hidden) { release(); if (armed) setArmed(false); } });
+window.addEventListener('pagehide', function(){ release(); });
+window.addEventListener('blur', function(){ release(); });
+document.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+// Экран не гаснет, пока страница открыта.
+function wake(){
+  try{ if (navigator.wakeLock && !document.hidden) navigator.wakeLock.request('screen').catch(function(){}); }catch(e){}
+}
+document.addEventListener('visibilitychange', function(){ if (!document.hidden) wake(); });
+
+/* ── запуск ── */
+wake();
+poll(); setInterval(poll, 1000);
+tick(); setInterval(tick, 2000);
+sirenButtons(); setInterval(sirenButtons, 30000);
+tab(load('m_tab') || 'p_drive');
+})();
+</script>
+</body>
+</html>

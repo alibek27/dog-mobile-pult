@@ -1,0 +1,96 @@
+--- shym1-ptt.py.orig	2026-09-19 21:23:31.351623005 +0500
++++ shym1-ptt.py	2026-09-20 13:23:55.248892942 +0500
+@@ -53,7 +53,11 @@
+ DASH_PORT = int(os.environ.get("DASH_PORT", "9995"))
+ CTL_PORT = int(os.environ.get("CTL_PORT", "9999"))
+ MTX_PORT = int(os.environ.get("MTX_WEBRTC_PORT", "8889"))
++# Второй раздатчик — только лёгкие копии камер для телефона. Отдельный, чтобы
++# кабинет на ноутбуке (он строит окна по списку путей основного) остался как был.
++MTX_TINY_PORT = int(os.environ.get("MTX_TINY_PORT", "8890"))
+ CERT_DIR = os.environ.get("PTT_CERT_DIR", os.path.join(APP, "certs"))
++MOBILE_PAGE = os.environ.get("PTT_MOBILE", os.path.join(APP, "mobile.html"))
+ CERT = os.path.join(CERT_DIR, "ptt.crt")
+ KEY = os.path.join(CERT_DIR, "ptt.key")
+ # Предел на тело запроса: у /speak свой предел по длительности, этот — про
+@@ -63,6 +67,7 @@
+ # Куда уходит запрос, если путь начинается с префикса. Всё остальное — кабинет.
+ ROUTES = (
+     ("/ctl/", CTL_PORT),
++    ("/mtx2/", MTX_TINY_PORT),
+     ("/mtx/", MTX_PORT),
+ )
+ 
+@@ -152,6 +157,24 @@
+ 
+ 
+ class H(BaseHTTPRequestHandler):
++    # TCP_NODELAY. Без него сервер шлёт заголовки и тело разными кусками, и
++    # второй кусок ждёт подтверждения первого: замер 20.09 с ноутбука через
++    # 4G — 145-186 мс на запрос при пинге 50 мс, с этой строкой 51-106 мс.
++    # Для пульта это полшага собаки на каждую команду.
++    disable_nagle_algorithm = True
++
++    # Рукопожатие TLS — ЗДЕСЬ, в потоке соединения, и со сроком.
++    # До 19.09 оно шло внутри accept() основного потока (wrap_socket на
++    # слушающем сокете). Телефон по 4G открыл соединение и пропал на полпути —
++    # и весь вход встал: accept ждал его вечно, очередь (5 мест) забилась, ни
++    # телефон, ни ноутбук не могли открыть ни кабинет, ни пульт, ни видео.
++    timeout = 60                      # молчащее соединение не держим вечно
++
++    def setup(self):
++        self.request.settimeout(15)
++        self.request.do_handshake()
++        BaseHTTPRequestHandler.setup(self)
++
+     server_version = "aktemir"
+     protocol_version = "HTTP/1.1"
+ 
+@@ -200,7 +223,35 @@
+             return base + v
+         return v
+ 
++    def _mobile(self):
++        """Страница пульта для ТЕЛЕФОНА, /m.
++
++        Отдаём её ЗДЕСЬ, а не в кабинете. 19.09 маршрут /m добавили в
++        shym1-dash.py, и это оказалось неверно: кабинет на ноутбуке — рабочий
++        инструмент заказчика, и трогать его файл ради телефона нельзя. Файл
++        кабинета возвращён к исходному, а телефонная страница живёт своей
++        жизнью: отдельный html, читается на каждый запрос (правится без
++        перезапуска службы), подстановка только имени робота.
++        """
++        try:
++            with open(MOBILE_PAGE, encoding="utf-8") as f:
++                page = f.read().replace("{{NAME}}", NAME)
++        except Exception as e:
++            return self._fail("нет страницы %s: %s" % (MOBILE_PAGE, str(e)[:120]), 500)
++        body = page.encode("utf-8")
++        self.send_response(200)
++        self.send_header("Content-Type", "text/html; charset=utf-8")
++        self.send_header("Content-Length", str(len(body)))
++        self.send_header("Cache-Control", "no-store")
++        self.end_headers()
++        try:
++            self.wfile.write(body)
++        except Exception:
++            pass
++
+     def _proxy(self):
++        if self.path.split("?")[0].rstrip("/") == "/m":
++            return self._mobile()
+         port, path, base = self._target()
+         n = int(self.headers.get("Content-Length") or 0)
+         if n > MAX_BODY:
+@@ -268,8 +319,11 @@
+         sys.exit(1)
+     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+     ctx.load_cert_chain(CERT, KEY)
++    ThreadingHTTPServer.request_queue_size = 64
++    ThreadingHTTPServer.daemon_threads = True
+     srv = ThreadingHTTPServer((BIND, PORT), H)
+-    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
++    srv.socket = ctx.wrap_socket(srv.socket, server_side=True,
++                                 do_handshake_on_connect=False)
+     log("защищённый кабинет на https://%s:%s/  (кабинет %s, пульт %s, видео %s)"
+         % (BIND, PORT, DASH_PORT, CTL_PORT, MTX_PORT))
+     srv.serve_forever()
