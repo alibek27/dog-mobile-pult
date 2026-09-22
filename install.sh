@@ -60,6 +60,15 @@ for i in go2 usb; do
     $SUDO install -m644 -o root -g root "$tmp/${NAME}-camera-tiny-$i" \
             "/etc/default/${NAME}-camera-tiny-$i"
 done
+# Доступ службы пульта к порту платы ESP32 (фары, стробоскоп). Порт
+# принадлежит группе dialout, служба работает от unitree, которого там нет, —
+# без этой добавки кнопки света молча не работают («Permission denied»).
+# Группу даём ТОЛЬКО службе, пользователя не меняем.
+$SUDO mkdir -p "/etc/systemd/system/${NAME}-ctl.service.d"
+printf '[Service]\nSupplementaryGroups=dialout\n' > "$tmp/esp-port.conf"
+$SUDO install -m644 -o root -g root "$tmp/esp-port.conf" \
+        "/etc/systemd/system/${NAME}-ctl.service.d/esp-port.conf"
+
 $SUDO systemctl daemon-reload
 $SUDO systemctl enable --now "${NAME}-mediamtx-tiny"
 $SUDO systemctl restart "${NAME}-camera-tiny@go2" "${NAME}-camera-tiny@usb"
@@ -75,7 +84,8 @@ cat <<TXT
 
   patches/ctl-raciya-gromkost-zaderzhka.patch  — к ${NAME}-ctl.py
       рация потоком (/speak/chunk), громкость сирены и рации (/vol),
-      TCP_NODELAY (минус ~100 мс на каждую команду)
+      TCP_NODELAY (минус ~100 мс на каждую команду), фары и стробоскоп
+      через ESP32 (/esp/...), тревога SOS (/sos)
 
   patches/ptt-stranica-telefona-i-zaderzhka.patch — к ${NAME}-ptt.py
       выдача /m, маршрут /mtx2/ на лёгкий раздатчик, рукопожатие TLS в

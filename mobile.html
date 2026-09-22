@@ -64,19 +64,38 @@ button{font:inherit;color:var(--text)}
 #panel{height:min(50vh,420px);background:var(--panel);border-top:1px solid var(--line);position:relative}
 .page{position:absolute;inset:0;display:none;flex-direction:column}
 .page.on{display:flex}
-.scroll{overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;padding:10px;flex:1}
+.scroll{overflow:hidden;padding:8px;flex:1;display:flex;flex-direction:column;gap:8px}
 #tabs{display:flex;background:#0f1216;border-top:1px solid var(--line)}
-#tabs button{flex:1;background:none;border:0;padding:9px 2px 8px;font-size:11px;color:var(--dim);
-  display:flex;flex-direction:column;align-items:center;gap:2px}
-#tabs button b{font-size:18px;font-weight:400;line-height:1}
-#tabs button.sel{color:var(--text);box-shadow:inset 0 2px 0 var(--acc)}
+#tabs button{flex:1;background:none;border:0;padding:11px 2px 12px;font-size:13px;font-weight:600;color:var(--dim);
+  display:flex;flex-direction:column;align-items:center;gap:3px}
+#tabs button b{font-size:24px;font-weight:400;line-height:1}
+#tabs button.sel{color:var(--acc);background:#0b0d10;box-shadow:inset 0 3px 0 var(--acc)}
 
 /* Пульт */
 #p_drive{touch-action:none}
-#cmds{display:flex;gap:6px;padding:8px;overflow-x:auto;touch-action:pan-x;flex:none}
-#cmds button{flex:1 0 auto;min-width:64px;background:#1c2229;border:1px solid var(--line);
-  border-radius:10px;padding:10px 8px;font-size:14px}
-#cmds button:active{background:#27303a}
+#cmds{display:flex;gap:6px;padding:8px;flex:none}
+#cmds .pose{flex:1;min-width:0;background:#1c2229;border:1.5px solid var(--c,#252b33);
+  border-radius:11px;padding:11px 2px;font-size:12px;font-weight:600;color:var(--text);
+  display:flex;flex-direction:column;align-items:center;gap:3px;line-height:1.05}
+#cmds .pose .ic{font-size:20px;line-height:1;color:var(--c)}
+#cmds .pose:active{background:var(--c);color:#0b0d10}
+#cmds .pose:active .ic{color:#0b0d10}
+#lights{display:flex;gap:8px;padding:0 8px 8px;flex:none;align-items:stretch}
+.lite{flex:1;min-width:0;border-radius:12px;border:2px solid var(--line);background:#1c2229;
+  padding:10px 4px;font-weight:600;color:var(--text);display:flex;flex-direction:column;gap:2px;
+  align-items:center;justify-content:center;font-size:12px}
+.lite b{font-size:17px;font-weight:800;letter-spacing:.5px}
+.lite.off{border-color:var(--ok);color:var(--ok)}
+.lite.on{border-color:var(--bad);color:var(--bad);background:#2a1416}
+.lite.sig{border-color:var(--warn);color:var(--warn)}
+.lite.sig:active{background:#3a2a10}
+.split{flex:1.6;display:flex;border-radius:12px;overflow:hidden;border:2px solid var(--line)}
+.split>div{flex:1;padding:10px 3px;font-size:12px;font-weight:600;display:flex;flex-direction:column;
+  gap:2px;align-items:center;justify-content:center;background:#1c2229}
+.split .lhalf{border-right:1px solid var(--line);color:var(--ok)}
+.split .lhalf.on{background:#2a1416;color:var(--bad)}
+.split b{font-size:16px;font-weight:800}
+.split>div:active{filter:brightness(1.35)}
 #pad{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;gap:12px;padding:4px 12px 8px}
 .side{display:flex;flex-direction:column;gap:8px;align-items:center;width:78px}
 .round{width:74px;height:74px;border-radius:50%;font-weight:600;font-size:13px}
@@ -101,7 +120,7 @@ button{font:inherit;color:var(--text)}
 #vec{position:absolute;bottom:6px;left:0;right:0;text-align:center;font:11px ui-monospace,monospace;color:var(--dim)}
 
 /* Общие блоки для остальных вкладок */
-.sec{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:10px}
+.sec{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
 .sec h3{margin:0 0 8px;font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;
   display:flex;justify-content:space-between;gap:8px}
 .r{display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-bottom:1px solid #20262e;font-size:13px}
@@ -111,6 +130,12 @@ button{font:inherit;color:var(--text)}
 .btns{display:flex;flex-wrap:wrap;gap:8px}
 .btn{background:#1c2229;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;text-decoration:none;color:var(--text)}
 .btn:active{background:#27303a}
+#sbtns.srow{flex-wrap:nowrap}
+#sbtns .btn{flex:1;min-width:0;padding:14px 4px;border-radius:12px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:4px}
+#sbtns .btn .si{font-size:30px;line-height:1}
+#sbtns .btn .scap{font-size:12px;font-weight:600;opacity:.7}
+#sbtns .btn.playing{background:#3a1718;border-color:var(--bad);color:#ffd7d7}
+#sbtns .btn.playing .scap{opacity:1}
 .btn.red{background:#3a1718;border-color:#6a2b2b;color:#f2c4c4}
 .btn.wide{flex:1}
 
@@ -123,7 +148,7 @@ button{font:inherit;color:var(--text)}
 .volhint{font-size:11px;color:var(--dim);margin-top:2px}
 
 /* Рация */
-#ptalk{width:100%;height:96px;border-radius:14px;border:2px solid var(--line);background:#1c2229;
+#ptalk{width:100%;flex:1;min-height:64px;border-radius:14px;border:2px solid var(--line);background:#1c2229;
   font-size:16px;font-weight:600;touch-action:none;margin-top:8px}
 #ptalk.rec{border-color:var(--bad);background:#3a1718;color:#ffd7d7}
 #ptalk:disabled{opacity:.5}
@@ -173,13 +198,19 @@ select{width:100%;margin-top:8px;background:#11151a;color:var(--dim);border:1px 
   <!-- ── Пульт ── -->
   <div class="page on" id="p_drive">
     <div id="cmds">
-      <button data-cmd="up">Встать</button>
-      <button data-cmd="liedown">Лечь</button>
-      <button data-cmd="sit">Сесть</button>
-      <button data-cmd="risesit">Из сидя</button>
-      <button data-cmd="hello">Привет</button>
-      <button data-cmd="stretch">Потянуться</button>
-      <button data-cmd="damp" data-confirm="Расслабить приводы? Собака осядет на пол.">Damp</button>
+      <button class="pose" data-cmd="up"      style="--c:#2fbf71"><span class="ic">▲</span>Встать</button>
+      <button class="pose" data-cmd="liedown" style="--c:#3b82f6"><span class="ic">▼</span>Лечь</button>
+      <button class="pose" data-cmd="sit"     style="--c:#8b5cf6"><span class="ic">◧</span>Сесть</button>
+      <button class="pose" data-cmd="risesit" style="--c:#14b8a6"><span class="ic">◨</span>Из сидя</button>
+      <button class="pose" data-cmd="hello"   style="--c:#e0a526"><span class="ic">✦</span>Привет</button>
+    </div>
+    <div id="lights">
+      <button id="l_far" class="lite off">фара<b>ВКЛ</b></button>
+      <div id="l_strobe" class="split">
+        <div class="lhalf off" id="l_str_on">строб.<b>ВКЛ</b></div>
+        <div class="rhalf" id="l_str_mode">режим<b>1</b></div>
+      </div>
+      <button id="l_alarm" class="lite sig">сигнал<b>!</b></button>
     </div>
     <div id="pad">
       <div class="side">
@@ -197,19 +228,16 @@ select{width:100%;margin-top:8px;background:#11151a;color:var(--dim);border:1px 
   <!-- ── Звук: сирена и рация ── -->
   <div class="page" id="p_sound"><div class="scroll">
     <div class="sec">
-      <h3><span>сирена</span><span id="sst" class="dm">выключена</span></h3>
-      <div class="btns" id="sbtns"><span class="dm">загружаю список…</span></div>
-      <div class="btns" style="margin-top:8px"><button class="btn red wide" id="soff">■ выключить сирену</button></div>
-      <div class="vol"><span>громкость</span><input type="range" id="v_siren" min="0" max="200" step="5" value="100"><b id="vl_siren">100%</b></div>
+      <h3><span>сирена — держи кнопку</span><span id="sst" class="dm">выключена</span></h3>
+      <div class="btns srow" id="sbtns"><span class="dm">загружаю…</span></div>
     </div>
-    <div class="sec">
-      <h3><span>рация</span><span id="pst" class="dm">—</span></h3>
-      <div class="vol" style="margin:0 0 8px"><span>громкость</span><input type="range" id="v_radio" min="0" max="200" step="5" value="100"><b id="vl_radio">100%</b></div>
+    <div class="vol"><span>громкость<br>рация+сирена</span><input type="range" id="v_all" min="0" max="200" step="5" value="100"><b id="vl_all">100%</b></div>
+    <div class="sec" style="flex:1;display:flex;flex-direction:column;min-height:0">
+      <h3><span>рация — держи и говори</span><span id="pst" class="dm">—</span></h3>
       <button class="btn" id="micon" style="width:100%">🎤 включить микрофон</button>
       <button id="ptalk" disabled>держите и говорите</button>
       <div class="meter"><i id="plvl"></i></div>
       <select id="pdev"></select>
-      <div class="lbl" style="text-align:left;margin-top:8px">Голос звучит из колонки робота. Пока вы говорите, ассистент не слушает.<br>Громкость выше 100% — громче, но с искажением: колонка уже на аппаратном максимуме.</div>
     </div>
   </div></div>
 
@@ -373,6 +401,7 @@ function poll(){
     lastPult = s.pult;
     sirenState(s.siren);
     if (s.vol) volShow(s.vol);
+    if (s.esp) espShow(s.esp);
   }).catch(function(){
     $('d_link').className = 'dot bad'; $('t_link').textContent = 'нет связи';
   });
@@ -424,6 +453,34 @@ each('#cmds button', function(b){
     }).catch(function(){ toast('нет связи'); });
   };
 });
+
+/* ── свет: фара (тумблер вкл/выкл), стробоскоп+режим (слитно), сигнализация ──
+   Кнопка показывает ДЕЙСТВИЕ: выкл сейчас -> зелёная «ВКЛ», вкл -> красная
+   «ВЫКЛ». Правая половина стробоскопа — режим: меняет цвет на каждый тап. */
+var farOn = false, strOn = false, strMode = 0;
+var modeCol = ['#3b82f6', '#e0a526', '#2fbf71', '#e5484d', '#8b5cf6'];
+function farPaint(){
+  var b = $('l_far');
+  b.className = 'lite ' + (farOn ? 'on' : 'off');
+  b.innerHTML = 'фара<b>' + (farOn ? 'ВЫКЛ' : 'ВКЛ') + '</b>';
+}
+function strPaint(){
+  var l = $('l_str_on');
+  l.className = 'lhalf ' + (strOn ? 'on' : 'off');
+  l.innerHTML = 'строб.<b>' + (strOn ? 'ВЫКЛ' : 'ВКЛ') + '</b>';
+  var r = $('l_str_mode');
+  r.style.color = modeCol[strMode % modeCol.length];
+  r.innerHTML = 'режим<b>' + ((strMode % modeCol.length) + 1) + '</b>';
+}
+function espShow(st){
+  if (st){ farOn = !!st.hl_low; strOn = !!st.strobe; }
+  farPaint(); strPaint();
+}
+$('l_far').onclick = function(){ farOn = !farOn; farPaint(); buzz(20); fire('/esp/headlight_low_' + (farOn ? 'on' : 'off')); };
+$('l_str_on').onclick = function(){ strOn = !strOn; strPaint(); buzz(20); fire('/esp/strobe_' + (strOn ? 'on' : 'off')); };
+$('l_str_mode').onclick = function(){ strMode++; strPaint(); buzz(20); fire('/esp/strobe_mode'); };
+$('l_alarm').onclick = function(){ buzz(30); fire('/esp/alarm'); };
+farPaint(); strPaint();
 
 /* ── джойстик ── */
 function shape(v){                    // мёртвая зона + мягкий старт
@@ -499,57 +556,84 @@ function sirenState(v){
 }
 function sirenButtons(){
   api('/siren').then(function(d){
-    if (!d.files || d.files.join() === sirenNames) return;
-    sirenNames = d.files.join();
-    var box = $('sbtns'); box.innerHTML = '';
+    if (!d.files) return;
+    // Оставляем только нужные сирены и убираем дубли (cartoon .mp3/.wav).
+    var allow = ['balkan', 'cartoon', 'long', 'policiya'], seen = {}, files = [];
     d.files.forEach(function(n){
+      var low = n.toLowerCase();
+      if (!allow.some(function(a){ return low.indexOf(a) >= 0; })) return;
+      var base = n.replace(/[.](wav|mp3)$/i, '');
+      if (seen[base]) return;
+      seen[base] = 1; files.push(n);
+    });
+    if (files.join() === sirenNames) return;
+    sirenNames = files.join();
+    var box = $('sbtns'); box.innerHTML = '';
+    files.forEach(function(n){
       var b = document.createElement('button');
       b.className = 'btn';
-      b.textContent = '▶ ' + n.replace(/[.](wav|mp3)$/i, '').replace(/^siren[-_]/i, '').replace(/[_-]+/g, ' ');
+      var key = n.toLowerCase();
+      // Иконка вместо названия. Ключ — по подстроке имени файла.
+      var ico = '🔊', cap = n.replace(/[.](wav|mp3)$/i, '').replace(/^siren[-_]/i, '').replace(/[_-]+/g, ' ');
+      if (key.indexOf('policiya') >= 0)     { ico = '🚓'; cap = 'полиция'; }
+      else if (key.indexOf('balkan') >= 0)  { ico = '🚨'; cap = 'балкан'; }
+      else if (key.indexOf('cartoon') >= 0) { ico = '🎺'; cap = 'мультик'; }
+      else if (key.indexOf('long') >= 0)    { ico = '📢'; cap = 'долгая'; }
+      b.innerHTML = '<span class="si">' + ico + '</span><span class="scap">' + cap + '</span>';
+      b.setAttribute('aria-label', cap);
       b.title = n;
-      b.onclick = function(){
-        buzz(30);
+      // Держи кнопку — сирена воет; отпустил — стоп.
+      b.addEventListener('pointerdown', function(e){
+        e.preventDefault(); buzz(30); b.classList.add('playing');
         api('/siren/start?name=' + encodeURIComponent(n)).then(function(x){
           if (!x.ok) toast('сирена: ' + (x.error || 'не вышло'), 2500);
         }).catch(function(){ toast('нет связи с роботом'); });
-      };
+      });
       box.appendChild(b);
     });
-    if (!d.files.length) box.innerHTML = '<span class="dm">на роботе нет файлов сирены</span>';
+    if (!files.length) box.innerHTML = '<span class="dm">нет нужных файлов сирены</span>';
   }).catch(function(){ $('sbtns').innerHTML = '<span class="rd">нет связи с роботом</span>'; });
 }
-$('soff').onclick = function(){ buzz(60); fire('/siren/stop'); };
+// Отпустил палец где угодно — сирену стоп (палец часто съезжает с кнопки).
+function sirenRelease(){
+  var on = document.querySelector('#sbtns .btn.playing');
+  if (!on) return;
+  each('#sbtns .btn', function(b){ b.classList.remove('playing'); });
+  fire('/siren/stop');
+}
+['pointerup', 'pointercancel'].forEach(function(ev){ window.addEventListener(ev, sirenRelease); });
+document.addEventListener('visibilitychange', function(){ if (document.hidden) sirenRelease(); });
 
 /* ── громкость сирены и рации ──
    Хранится на собаке (переживает перезапуск и видна с любого пульта), поэтому
    ползунок показывает то, что прислала собака, — кроме момента, когда его
    двигает палец. Шлём с задержкой: ползунок даёт десятки событий в секунду,
    а собаке нужно последнее. Сирена, которая уже воет, меняет громкость сразу. */
-var volBusy = {siren: 0, radio: 0}, volTimer = {};
-function volLabel(k, v){
-  var b = $('vl_' + k); b.textContent = v + '%'; b.classList.toggle('hot', v > 100);
+// ОДИН ползунок на рацию и сирену: двигаешь — обе становятся одинаково.
+var volBusy = 0, volTimer = null;
+function volLabel(v){
+  var b = $('vl_all'); b.textContent = v + '%'; b.classList.toggle('hot', v > 100);
 }
 function volShow(vol){
-  ['siren', 'radio'].forEach(function(k){
-    if (vol[k] == null || Date.now() - volBusy[k] < 1500) return;
-    var r = $('v_' + k);
-    if (vol.max) r.max = vol.max;
-    r.value = vol[k]; volLabel(k, vol[k]);
-  });
+  if (!vol || Date.now() - volBusy < 1500) return;
+  var r = $('v_all');
+  if (vol.max) r.max = vol.max;
+  var v = (vol.radio != null ? vol.radio : vol.siren);
+  if (v != null) { r.value = v; volLabel(v); }
 }
-['siren', 'radio'].forEach(function(k){
-  var r = $('v_' + k);
+(function(){
+  var r = $('v_all');
   r.addEventListener('input', function(){
-    volBusy[k] = Date.now(); volLabel(k, +r.value);
-    clearTimeout(volTimer[k]);
-    volTimer[k] = setTimeout(function(){
-      api('/vol/set?' + k + '=' + r.value).then(function(v){
-        volBusy[k] = Date.now();
+    volBusy = Date.now(); volLabel(+r.value);
+    clearTimeout(volTimer);
+    volTimer = setTimeout(function(){
+      api('/vol/set?siren=' + r.value + '&radio=' + r.value).then(function(v){
+        volBusy = Date.now();
         if (!v.ok) toast('громкость: ' + (v.error || 'не вышло'));
       }).catch(function(){ toast('нет связи с роботом'); });
     }, 200);
   });
-});
+})();
 
 /* ── рация ──
    Держите кнопку и говорите: запись уходит WAV'ом 16 кГц на /speak, робот
@@ -570,7 +654,9 @@ if (!SECURE || !navigator.mediaDevices) {
      Раньше вся фраза уходила только после отпускания — задержка была не
      меньше длины самой фразы. Старый путь (/speak целым WAV) остался
      запасным: если на собаке служба без потока, переключаемся на него сами. */
-  var STREAM = true, CHUNK = 4000;          // 4000 отсчётов при 16 кГц = 0.25 с
+  // Рация: записываем всю фразу, пока кнопка зажата, и играем ПОСЛЕ отпускания
+  // (не потоком). STREAM=false -> путь /speak целым WAV.
+  var STREAM = false, CHUNK = 4000;         // 4000 отсчётов при 16 кГц = 0.25 с
   var sid = '', seq = 0, pend = [], sentSec = 0, streamFail = false;
 
   var devList = function(){

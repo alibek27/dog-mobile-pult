@@ -1,16 +1,46 @@
 --- "/home/linux/dog-mobile-pult/\321\201\320\273\321\203\320\266\320\261\321\213/ctl.py.\320\270\321\201\321\205\320\276\320\264\320\275\320\270\320\272"	2026-09-20 15:09:28.012540756 +0500
-+++ "/home/linux/dog-mobile-pult/\321\201\320\273\321\203\320\266\320\261\321\213/ctl.py"	2026-09-20 15:09:28.010540565 +0500
-@@ -606,7 +606,8 @@
++++ "/home/linux/dog-mobile-pult/\321\201\320\273\321\203\320\266\320\261\321\213/ctl.py"	2026-09-22 14:40:41.041525370 +0500
+@@ -32,8 +32,14 @@
+ import time
+ import urllib.parse
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++import math
++import termios
+ 
+-NAME = os.environ.get("NAME", "shymside")
++# Предел тела запроса (DoS: гигантский Content-Length выедал память службы
++# управления). 24 МБ хватает для /say и /speak, всё сверх — 413.
++MAX_BODY = 24 * 1024 * 1024
++
++NAME = os.environ.get("NAME", "shym1")
+ APP = "/home/unitree/%s_assistant" % NAME
+ PORT = int(os.environ.get("CTL_PORT", "9999"))
+ BIND = os.environ.get("CTL_BIND", "0.0.0.0")
+@@ -260,6 +266,10 @@
+         v = float(v)
+     except Exception:
+         return 0.0
++    # NaN/Infinity: min(lim, nan) вернул бы lim — мусорный пакет дал бы полный
++    # ход вместо нуля. Любое не-конечное число трактуем как 0 (стоп).
++    if not math.isfinite(v):
++        return 0.0
+     return max(-lim, min(lim, v))
+ 
+ 
+@@ -606,7 +616,11 @@
            # Воет ли сейчас сирена. Кабинету это нужно в общем состоянии, а не
            # отдельным запросом: кнопка обязана показывать правду даже у того,
            # кто её не нажимал — рулить роботом могут с двух мест.
 -          "siren": siren_state()}
 +          "siren": siren_state(),
++          # Свет и стробоскоп (ESP32) — кнопки кабинета показывают правду.
++          "esp": dict(_esp_state),
++          # Громкость сирены и рации в процентах (для мобильного пульта).
 +          "vol": vol_state()}
      # Берём из постоянной подписки, а не поднимаем свою. Прежняя версия ждала
      # первое сообщение до 1.5 с на КАЖДЫЙ запрос — пульт из-за этого заметно
      # подвисал на старте, а сторож не мог позволить себе спросить позу вовсе.
-@@ -972,6 +973,7 @@
+@@ -972,6 +986,7 @@
              # Запись короче одного кадра — старый способ, по пику.
              gain = max(1.0, min(SPEAK_MAX_GAIN,
                                  (SPEAK_PEAK * full) / peak0)) * SPEAK_BOOST
@@ -18,34 +48,20 @@
          if abs(gain - 1.0) > 0.02:
              pcm = audioop.mul(pcm, sw, gain)
      except Exception:
-@@ -1049,6 +1051,214 @@
+@@ -1049,6 +1064,189 @@
      return {"ok": True, "seconds": round(dur, 2), "took": took}
  
  
 +# ── РАЦИЯ ПОТОКОМ ───────────────────────────────────────────────────────
-+# /speak ждёт всю фразу целиком: оператор договорил, отпустил клавишу, и
-+# только тогда запись уходит на робота. Задержка никогда не меньше длины
-+# фразы — 19.09 с телефона через 4G это читалось как «рация медленно доходит»
-+# (14 с речи прозвучали через ~17 с после начала).
-+#
-+# Здесь звук идёт кусками по ~0.25 с, пока оператор ещё говорит, и сразу
-+# уходит в один долгоживущий aplay. Задержка = кусок + сеть + буфер aplay.
-+#
-+#   POST /speak/chunk?sid=<сеанс>&seq=<номер>[&last=1]
-+#        тело = сырой PCM S16LE, 16 кГц, моно (без заголовка WAV)
-+#
-+# Куски приходят параллельными запросами и могут обогнать друг друга, поэтому
-+# складываем их по номеру и играем строго по порядку. Пропавший кусок ждём
-+# недолго (STREAM_HOLE) и перешагиваем: дыра в полслова лучше, чем рация,
-+# вставшая колом до конца фразы.
-+#
-+# Громкость нельзя посчитать по всей фразе — её ещё нет. Поэтому та же цель
-+# SPEAK_TARGET, но подстройка плавная, по речевым кадрам: тишину и шум между
-+# словами не выкручиваем (иначе шипение в паузах).
++# /speak ждёт всю фразу целиком. Здесь звук идёт кусками ~0.25 с, пока оператор
++# ещё говорит, и сразу уходит в один долгоживущий aplay. Куски приходят
++# параллельно и могут обогнать друг друга — складываем по номеру, играем по
++# порядку; пропавший кусок ждём STREAM_HOLE и перешагиваем.
++#   POST /speak/chunk?sid=<сеанс>&seq=<номер>[&last=1]  тело = PCM S16LE 16кГц моно
 +STREAM_RATE = 16000
-+STREAM_HOLE = float(os.environ.get("CTL_STREAM_HOLE", "0.5"))    # ждать пропавший кусок, с
-+STREAM_IDLE = float(os.environ.get("CTL_STREAM_IDLE", "3.0"))    # нет кусков -> конец сеанса, с
-+STREAM_PREBUF = float(os.environ.get("CTL_STREAM_PREBUF", "0.25"))  # запас перед первым звуком, с
++STREAM_HOLE = float(os.environ.get("CTL_STREAM_HOLE", "0.5"))
++STREAM_IDLE = float(os.environ.get("CTL_STREAM_IDLE", "3.0"))
++STREAM_PREBUF = float(os.environ.get("CTL_STREAM_PREBUF", "0.25"))
 +
 +_stream = None
 +_stream_lock = threading.Lock()
@@ -54,13 +70,13 @@
 +class _SpeakStream(object):
 +    def __init__(self, sid):
 +        self.sid = sid
-+        self.parts = {}          # seq -> bytes
-+        self.last_seq = None     # номер последнего куска, когда он известен
++        self.parts = {}
++        self.last_seq = None
 +        self.next = 0
 +        self.cv = threading.Condition()
 +        self.t_last = time.time()
 +        self.t0 = time.time()
-+        self.played = 0          # байт отдано в aplay
++        self.played = 0
 +        self.gain = None
 +        self.holes = 0
 +        self.dead = False
@@ -98,12 +114,10 @@
 +            pks.sort()
 +            r = rmss[min(int(len(rmss) * 0.90), len(rmss) - 1)]
 +            pk = pks[min(int(len(pks) * 0.95), len(pks) - 1)]
-+            # Речь, а не пауза: ниже ~1% шкалы усиление не пересчитываем.
 +            if r > 300 and pk > 0:
 +                want = SPEAK_TARGET * full / r
 +                want = min(want, SPEAK_PEAK * full / pk, SPEAK_MAX_GAIN)
 +                want = max(want, 0.2) * SPEAK_BOOST
-+                # Первый речевой кусок задаёт уровень сразу, дальше — плавно.
 +                self.gain = want if self.gain is None else (0.7 * self.gain + 0.3 * want)
 +        g = (self.gain if self.gain is not None else 1.0) * _vol["radio"]
 +        if abs(g - 1.0) > 0.02:
@@ -114,14 +128,12 @@
 +        if not pcm:
 +            return
 +        pcm = self._level(pcm)
-+        # Глушим слух на то, что уже отдано и ещё не отзвучало, плюс хвост.
 +        ahead = self.played / 2.0 / STREAM_RATE - (time.time() - self.t_play)
 +        voice_mute(max(0.0, ahead) + len(pcm) / 2.0 / STREAM_RATE + MUTE_TAIL, "speak")
 +        try:
 +            self.proc.stdin.write(pcm)
 +            self.proc.stdin.flush()
 +        except Exception:
-+            # pulse отвалился посреди фразы — один раз уходим прямо в ALSA.
 +            err = "aplay вышел с кодом %s" % self.proc.poll()
 +            alt = spk_alsa_direct()
 +            if alt and alt != self.dev:
@@ -144,8 +156,6 @@
 +                return
 +            ensure_loud()
 +            voice_mute(STREAM_IDLE + MUTE_TAIL, "speak")
-+            # Небольшой запас перед первым звуком: без него первый же сетевой
-+            # рывок даёт щелчок-недобор в самом начале фразы.
 +            with self.cv:
 +                end = time.time() + 1.0
 +                while (sum(len(v) for v in self.parts.values()) < STREAM_PREBUF * STREAM_RATE * 2
@@ -171,7 +181,6 @@
 +                            data = None
 +                            break
 +                        if self.parts and min(self.parts) > self.next:
-+                            # Кусок потерялся или застрял в сети.
 +                            hole_t = hole_t or now
 +                            if now - hole_t > STREAM_HOLE:
 +                                self.holes += 1
@@ -196,9 +205,6 @@
 +                    self.proc.wait(timeout=MAX_SPEAK + 5)
 +                except Exception:
 +                    self.proc.kill()
-+            # Отзвучало — слух возвращаем с обычным хвостом на эхо. Сначала
-+            # снимаем (иначе остался бы срок от /ptt/on на все 30 с), потом
-+            # ставим короткий хвост.
 +            voice_mute(0, "speak_stream")
 +            voice_mute(MUTE_TAIL, "speak_stream")
 +            sec = self.played / 2.0 / STREAM_RATE
@@ -219,7 +225,6 @@
 +        st = _stream
 +        if st is None or st.sid != sid:
 +            if st is not None:
-+                # Новый сеанс вытесняет старый: рация одна.
 +                st.dead = True
 +                with st.cv:
 +                    st.cv.notify()
@@ -233,19 +238,14 @@
  def handle_say(wav_bytes):
      """WAV с ноутбука -> распознать -> ответить -> сказать вслух."""
      import contextlib
-@@ -1323,6 +1533,95 @@
+@@ -1323,6 +1521,87 @@
      return wav
  
  
 +# ── ГРОМКОСТЬ СИРЕНЫ И РАЦИИ ────────────────────────────────────────────
-+# Колонка аппаратно уже на максимуме (PCM 100%, 0 дБ), и обе играют прямо в
-+# ALSA, мимо pulse — значит громкость можно крутить только программно, умножая
-+# сам звук. 1.0 = как было до 19.09. Выше 1.0 — громче, но упирается в шкалу:
-+# пики режутся, звук грубеет. Для сирены это приемлемо (её задача — быть
-+# слышной), для рации оператор решает сам, ползунком.
-+#
-+# Хранится в файле, а не в памяти: служба перезапускается, а оператор, раз
-+# выставив «сирену потише», не должен вспоминать об этом после каждого старта.
++# Колонка аппаратно на максимуме и играет мимо pulse — громкость крутим только
++# программно, умножая сам звук. 1.0 = как было. Хранится в файле: служба
++# перезапускается, а выставленную громкость помнить не должны.
 +VOL_FILE = os.environ.get("CTL_VOL_FILE", os.path.join(APP, "config", "volume.json"))
 +VOL_MAX = float(os.environ.get("CTL_VOL_MAX", "2.0"))
 +_vol = {"siren": 1.0, "radio": 1.0}
@@ -275,6 +275,7 @@
 +    if changed:
 +        try:
 +            tmp = VOL_FILE + ".part"
++            os.makedirs(os.path.dirname(VOL_FILE), exist_ok=True)
 +            with open(tmp, "w") as f:
 +                json.dump(_vol, f)
 +            os.replace(tmp, VOL_FILE)
@@ -282,8 +283,6 @@
 +            log("громкость не сохранилась:", e)
 +        jlog("vol", **vol_state())
 +        log("громкость:", vol_state())
-+        # Сирена уже воет — пусть новая громкость слышна сразу, а не со
-+        # следующего круга (круг у длинной записи — 27 с).
 +        if "siren" in changed:
 +            with _siren_lock:
 +                if _siren["on"] and _siren.get("proc") is not None:
@@ -294,8 +293,7 @@
 +
 +
 +def _siren_scaled(path):
-+    """Файл сирены с текущей громкостью. 100% — сам исходник; иначе копия в
-+    /run (память, пропадает при перезагрузке), по одной на громкость."""
++    """Файл сирены с текущей громкостью. 100% — сам исходник; иначе копия в /run."""
 +    v = _vol["siren"]
 +    if abs(v - 1.0) < 0.005:
 +        return path
@@ -311,7 +309,6 @@
 +        prm = w.getparams()
 +        pcm = w.readframes(w.getnframes())
 +    pcm = audioop.mul(pcm, prm.sampwidth, v)
-+    # Старые копии этой же сирены с другой громкостью — прочь, чтобы /run не пух.
 +    try:
 +        for n in os.listdir(d):
 +            if n.startswith("siren-%s-v" % base) and n.endswith(".wav"):
@@ -329,7 +326,7 @@
  def _siren_worker(path, name):
      """Крутит файл по кругу, пока не остановят или не выйдет срок.
  
-@@ -1349,7 +1648,12 @@
+@@ -1349,7 +1628,12 @@
              if not _siren["on"] or time.time() >= _siren["until"]:
                  break
          try:
@@ -343,7 +340,7 @@
                              stdout=sp.DEVNULL, stderr=sp.PIPE)
          except Exception as e:
              jlog("siren_fail", name=name, err=str(e)[:120])
-@@ -1361,11 +1665,24 @@
+@@ -1361,11 +1645,24 @@
          # Иначе робот слушает собственный вой и отвечает на него.
          started = time.time()
          hung = False
@@ -351,7 +348,7 @@
          while proc.poll() is None:
              voice_mute(8.0, "siren")
 -            time.sleep(1.0)
-+            # Сон дробный: смена громкости должна слышаться сразу.
++            # Сон дробный: смена громкости слышна сразу, а не со следующего круга.
 +            for _ in range(5):
 +                time.sleep(0.2)
 +                with _siren_lock:
@@ -369,7 +366,7 @@
              if stop:
                  stopped_by_us = True
                  try:
-@@ -1392,6 +1709,8 @@
+@@ -1392,6 +1689,8 @@
          # остановки.
          if stopped_by_us:
              break
@@ -378,24 +375,148 @@
  
          # ── Играл ли он на самом деле ────────────────────────────────────
          # 16.09, shym1: сирена честно докладывала «играю», крутила aplay по
-@@ -1511,6 +1830,12 @@
+@@ -1509,8 +1808,116 @@
+     r"|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$"))
  
+ 
++# ── ESP32: фары и стробоскоп ─────────────────────────────────────────────
++# Плата ESP32 (CP2102) на серийном порту принимает текстовые команды (main.cpp):
++# setHeadlightLow_on/off, setHeadlightHigh_on/off, setStroboscopeState_on/off,
++# changeStroboscopeMode, alarm. Порт держим ОТКРЫТЫМ постоянно: повторное
++# открытие дёргает DTR и сбрасывает ESP32.
++ESP_DEV = os.environ.get("CTL_ESP_DEV", "/dev/ttyUSB0")
++ESP_MAP = {
++    "headlight_low_on":   "setHeadlightLow_on",
++    "headlight_low_off":  "setHeadlightLow_off",
++    "headlight_high_on":  "setHeadlightHigh_on",
++    "headlight_high_off": "setHeadlightHigh_off",
++    "strobe_on":          "setStroboscopeState_on",
++    "strobe_off":         "setStroboscopeState_off",
++    "strobe_mode":        "changeStroboscopeMode",
++    "alarm":              "alarm",
++}
++_esp_state = {"hl_low": False, "hl_high": False, "strobe": False}
++_esp_fd = None
++_esp_lock = threading.Lock()
++
++
++def _esp_open():
++    global _esp_fd
++    if _esp_fd is not None:
++        return _esp_fd
++    fd = os.open(ESP_DEV, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
++    a = termios.tcgetattr(fd)
++    a[0] = 0                                     # iflag
++    a[1] = 0                                     # oflag
++    a[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
++    a[3] = 0                                     # lflag
++    a[4] = termios.B115200                       # ispeed
++    a[5] = termios.B115200                       # ospeed
++    termios.tcsetattr(fd, termios.TCSANOW, a)
++    _esp_fd = fd
++    return fd
++
++
++def esp_send(key):
++    """Отправить команду ESP32 по ключу из ESP_MAP. Возвращает (ok, ошибка)."""
++    cmd = ESP_MAP.get(key)
++    if cmd is None:
++        return False, "неизвестная команда ESP"
++    global _esp_fd
++    with _esp_lock:
++        try:
++            fd = _esp_open()
++            os.write(fd, (cmd + "\n").encode("ascii"))
++        except Exception as e:
++            try:
++                if _esp_fd is not None:
++                    os.close(_esp_fd)
++            except Exception:
++                pass
++            _esp_fd = None
++            return False, "ESP не отвечает: %s" % str(e)[:120]
++    if   key == "headlight_low_on":   _esp_state["hl_low"]  = True
++    elif key == "headlight_low_off":  _esp_state["hl_low"]  = False
++    elif key == "headlight_high_on":  _esp_state["hl_high"] = True
++    elif key == "headlight_high_off": _esp_state["hl_high"] = False
++    elif key == "strobe_on":          _esp_state["strobe"]  = True
++    elif key == "strobe_off":         _esp_state["strobe"]  = False
++    return True, ""
++
++
++# ── SOS-рефлекс ──────────────────────────────────────────────────────────
++# Голосовой тракт при просьбе о помощи зовёт /sos. Процесс: сигнализация
++# (ESP32 alarm — мигание фар/стробоскопа) + сирена «balkan» ОДИН раз и всё.
++SIREN_SOS = os.environ.get("CTL_SOS_SIREN", "siren-balkan.wav")
++
++
++def _siren_once(name, tag="siren-once"):
++    """Проиграть сирену ОДИН раз (не по кругу). Для SOS и кнопки кабинета."""
++    try:
++        path = _as_wav(_siren_path(name))
++        dur = 6.0
++        try:
++            import wave as _wv, contextlib as _cl
++            with _cl.closing(_wv.open(path)) as _w:
++                dur = _w.getnframes() / float(_w.getframerate() or 1)
++        except Exception:
++            pass
++        nope = no_speaker()
++        if nope:
++            jlog("siren_once_no_spk", err=nope)
++            return
++        voice_mute(dur + 2.0, tag)       # чтобы робот не слушал свою же сирену
++        play_once(spk_device(), path, dur)
++    except Exception as e:
++        jlog("siren_once_fail", err=str(e)[:120])
++
++
++def sos_fire():
++    """Тревога SOS: сигнализация ESP32 + сирена один цикл. Не бросает наружу."""
++    try:
++        esp_send("alarm")
++    except Exception as e:
++        jlog("sos_esp_fail", err=str(e)[:120])
++    _siren_once(SIREN_SOS, "sos")
++
++
  class H(BaseHTTPRequestHandler):
      protocol_version = "HTTP/1.1"
-+    # TCP_NODELAY. Без него сервер шлёт заголовки и тело разными кусками, и
-+    # второй кусок ждёт подтверждения первого: замер 20.09 с ноутбука через
-+    # 4G — 145-186 мс на запрос при пинге 50 мс, с этой строкой 51-106 мс.
-+    # Для пульта это полшага собаки на каждую команду.
++    # TCP_NODELAY: без него заголовки и тело уходят разными кусками, второй ждёт
++    # подтверждения первого — ~100 мс на команду пульта через 4G. С этой строкой
++    # 51-106 мс вместо 145-186. Для пульта это полшага собаки на каждую команду.
 +    disable_nagle_algorithm = True
-+
++    # Таймаут сокета запроса: висящее соединение (slowloris) само закроется
++    # через 20 с и не будет держать поток службы управления.
++    timeout = 20
  
      def _cors(self):
          """Разрешение для страницы дашборда. Отдаём ТОЛЬКО своим адресам."""
-@@ -1579,6 +1904,18 @@
+@@ -1538,9 +1945,19 @@
+         self._cors()
+         self.end_headers()
+ 
++    def _csrf_block(self, p):
++        """Отсечь кроссайтовые браузерные запросы (CSRF, К-2, 20.09).
++        Чужая вкладка, дёрнувшая <img src=...:9999/move?arm=1>, шлёт заголовок
++        Sec-Fetch-Site: cross-site — браузер ставит его сам, подделать со
++        стороны нельзя. Пульт (не браузер) этот заголовок не шлёт и проходит;
++        кабинет шлёт same-origin/same-site и проходит. /stop не трогаем."""
++        return self.headers.get("Sec-Fetch-Site") == "cross-site" and p != "/stop"
++
+     def do_GET(self):
+         global _armed
+         p = self.path.split("?")[0].rstrip("/")
++        if self._csrf_block(p):
++            return self._send({"ok": False, "error": "кроссайтовый запрос отклонён"}, 403)
+         # Имя отдаём в КАЖДОМ ответе. 18.08 выяснилось, что в тайлнете живут
+         # несколько собак Unitree, и у всех заводское имя хоста "ubuntu" —
+         # отличить их по hostname нельзя. Пульт, наведённый на соседний адрес,
+@@ -1579,6 +1996,18 @@
                  return self._send({"ok": False, "error": str(e)[:200]}, 400)
          if p == "/siren/stop":
              return self._send(siren_stop())
-+        # ── громкость сирены и рации, в процентах ─────────────────────────
++        # ── громкость сирены и рации, в процентах (для пульта) ────────────
 +        if p == "/vol":
 +            st = vol_state()
 +            st["ok"] = True
@@ -410,12 +531,54 @@
          if p.startswith("/cmd/"):
              ok, r = do_cmd(p[5:])
              return self._send({"ok": ok, "result": r}, 200 if ok else 400)
-@@ -1707,6 +2044,20 @@
+@@ -1693,11 +2122,40 @@
+                                        "/spk/max": "выкрутить громкоговоритель"},
+                                "limits": {"vx": VX_MAX, "vy": VY_MAX,
+                                           "vyaw": VYAW_MAX, "ttl": MOVE_TTL}})
++        if p == "/sos":
++            # Тревога в отдельном потоке: сирена играет несколько секунд,
++            # HTTP-ответ отдаём сразу.
++            threading.Thread(target=sos_fire, daemon=True).start()
++            return self._send({"ok": True, "sos": True})
++        if p == "/siren/once":
++            # Один проигрыш сирены (для SOS: свет и голос делает voice отдельно).
++            name = SIREN_SOS
++            try:
++                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
++                if q.get("name"):
++                    name = q["name"][0]
++            except Exception:
++                pass
++            threading.Thread(target=_siren_once, args=(name, "siren-once"),
++                             daemon=True).start()
++            return self._send({"ok": True})
++        if p.startswith("/esp/"):
++            ok, e = esp_send(p[5:])
++            if ok:
++                return self._send({"ok": True, "esp": dict(_esp_state)})
++            return self._send({"ok": False, "error": e}, 400)
+         return self._send({"ok": False, "error": "нет такой ручки"}, 404)
+ 
+     def do_POST(self):
+         p = self.path.split("?")[0].rstrip("/")
+-        n = int(self.headers.get("Content-Length") or 0)
++        if self._csrf_block(p):
++            return self._send({"ok": False, "error": "кроссайтовый запрос отклонён"}, 403)
++        try:
++            n = int(self.headers.get("Content-Length") or 0)
++        except Exception:
++            return self._send({"ok": False, "error": "плохой Content-Length"}, 400)
++        if n < 0 or n > MAX_BODY:
++            return self._send({"ok": False, "error": "слишком большое тело"}, 413)
+         body = self.rfile.read(n) if n else b""
+         if p == "/move":
+             try:
+@@ -1707,6 +2165,20 @@
              ok, r = do_move(d.get("vx", 0), d.get("vy", 0), d.get("vyaw", 0),
                              arm=bool(d.get("arm")))
              return self._send({"ok": ok, "result": r}, 200 if ok else 400)
 +        if p == "/speak/chunk":
-+            # Рация потоком: кусок сырого PCM, пока оператор ещё говорит.
++            # Рация ПОТОКОМ: кусок сырого PCM, пока оператор ещё говорит.
 +            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
 +            try:
 +                seq = int((q.get("seq") or ["0"])[0])
